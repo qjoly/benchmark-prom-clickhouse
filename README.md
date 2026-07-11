@@ -144,18 +144,26 @@ Prometheus ecosystem; point an analytics workload at Mimir and you hit its guard
 
 ## Topology
 
-```
-              ┌──────────────────────────── TSBS (generator + loaders + runners) ──────────────────────────┐
-              │                                                                                             │
-   remote_write (protobuf snappy)                                              native INSERT (port 9000)
-              │                                                                                             │
-   ┌──────────▼───────────┐                                              ┌──────────────────▼──────────────┐
-   │  Mimir (cluster)      │                                              │  ClickHouse (cluster)            │
-   │  mimir-1/2/3, RF=3    │                                              │  2 shards × 2 replicas           │
-   │  nginx gateway        │                                              │  chnode1..4 + ClickHouse Keeper  │
-   │  built-in compactor   │                                              │  ReplicatedMergeTree + Distributed│
-   │  ↳ RustFS (S3 blocks) │                                              │  merges = compaction             │
-   └──────────────────────┘                                              └──────────────────────────────────┘
+```mermaid
+flowchart TB
+    TSBS["TSBS<br/>generator · loaders · runners"]
+
+    subgraph MIMIR["Grafana Mimir cluster"]
+        direction TB
+        M["mimir-1/2/3 · RF=3<br/>nginx gateway · built-in compactor"]
+        RUSTFS[("RustFS<br/>S3 blocks")]
+        M -->|blocks| RUSTFS
+    end
+
+    subgraph CH["ClickHouse cluster"]
+        direction TB
+        CHN["chnode-0..3<br/>2 shards × 2 replicas<br/>ReplicatedMergeTree + Distributed"]
+        KEEPER[("ClickHouse Keeper")]
+        CHN <-->|replication| KEEPER
+    end
+
+    TSBS -->|"remote_write (protobuf snappy)"| M
+    TSBS -->|"native INSERT :9000"| CHN
 ```
 
 | Component        | Role                                    | Host port |
