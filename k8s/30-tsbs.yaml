@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tsbs
+  namespace: bench-prom-ch
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: tsbs } }
+  template:
+    metadata: { labels: { app: tsbs } }
+    spec:
+      securityContext: { runAsUser: 0 }
+      containers:
+        - name: tsbs
+          image: golang:1.22-bookworm
+          workingDir: /workspace
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /workspace/data /workspace/results /workspace/bin
+              export GOBIN=/workspace/bin
+              command -v curl >/dev/null || (apt-get update && apt-get install -y --no-install-recommends curl ca-certificates >/dev/null)
+              if [ ! -x /workspace/bin/tsbs_generate_data ]; then
+                echo "Compiling TSBS..."
+                rm -rf /src && git clone --depth 1 https://github.com/timescale/tsbs /src
+                cd /src && CGO_ENABLED=0 GOFLAGS=-mod=mod go install ./cmd/...
+              fi
+              ln -sf /workspace/bin/tsbs_* /usr/local/bin/
+              echo "TSBS ready: $(ls /workspace/bin | tr '\n' ' ')"
+              sleep infinity
+          volumeMounts: [{ name: workspace, mountPath: /workspace }]
+          resources:
+            requests: { cpu: "500m", memory: "2Gi" }
+            limits: { cpu: "6", memory: "10Gi" }
+      volumes:
+        - name: workspace
+          emptyDir: { sizeLimit: 40Gi }

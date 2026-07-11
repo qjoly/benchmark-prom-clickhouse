@@ -1,0 +1,21 @@
+apiVersion: 1
+
+datasources:
+  - name: Mimir
+    type: prometheus
+    access: proxy
+    url: http://mimir-gw:9009/prometheus
+    isDefault: true
+    jsonData:
+      timeInterval: 10s
+
+  - name: ClickHouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    jsonData:
+      host: chnode1
+      port: 9000
+      protocol: native
+      username: default
+    secureJsonData:
+      password: ""

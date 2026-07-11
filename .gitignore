@@ -1,0 +1,11 @@
+# Generated data and benchmark results
+data/*.gz
+data/*.dat
+results/*.txt
+results/*.csv
+
+# Local environment (contains the object-storage password); use .env.example as a template
+.env
+
+# Misc
+.DS_Store

@@ -1,0 +1,8 @@
+<clickhouse>
+    <macros>
+        <cluster>bench_cluster</cluster>
+        <shard>02</shard>
+        <replica>chnode3</replica>
+    </macros>
+    <interserver_http_host>chnode3</interserver_http_host>
+</clickhouse>

@@ -1,0 +1,26 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- Comfortable headroom for the massive TSBS ingestion -->
+            <max_partitions_per_insert_block>0</max_partitions_per_insert_block>
+            <max_insert_threads>4</max_insert_threads>
+            <max_memory_usage>0</max_memory_usage>
+            <!-- Let ClickHouse manage merges without aggressive throttling -->
+            <background_pool_size>16</background_pool_size>
+            <!-- TSBS creates its tables with the legacy MergeTree syntax (without ORDER BY). -->
+            <allow_deprecated_syntax_for_merge_tree>1</allow_deprecated_syntax_for_merge_tree>
+        </default>
+    </profiles>
+
+    <users>
+        <default>
+            <password></password>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management>1</access_management>
+        </default>
+    </users>
+</clickhouse>

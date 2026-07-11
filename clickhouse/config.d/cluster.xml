@@ -1,0 +1,39 @@
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+
+    <!-- Connection to the ClickHouse Keeper coordinator (ZooKeeper equivalent) -->
+    <zookeeper>
+        <node>
+            <host>chkeeper</host>
+            <port>9181</port>
+        </node>
+    </zookeeper>
+
+    <!-- Cluster: 2 shards x 2 replicas -->
+    <remote_servers>
+        <bench_cluster>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica>
+                    <host>chnode1</host>
+                    <port>9000</port>
+                </replica>
+                <replica>
+                    <host>chnode2</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica>
+                    <host>chnode3</host>
+                    <port>9000</port>
+                </replica>
+                <replica>
+                    <host>chnode4</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </bench_cluster>
+    </remote_servers>
+</clickhouse>
