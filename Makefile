@@ -1,5 +1,5 @@
 .PHONY: help build up down clean ps logs wait smoke bench generate load query cluster read-gradient observe grafana \
-        k8s-up k8s-wait k8s-smoke k8s-bench k8s-cluster k8s-read k8s-observe k8s-ps k8s-down
+        k8s-up k8s-wait k8s-smoke k8s-bench k8s-cluster k8s-read k8s-sweep k8s-observe k8s-ps k8s-down
 
 # ─────────── Kubernetes target (RUNTIME=k8s) ───────────
 # Prerequisite: KUBECONFIG pointing at your cluster, and OBJSTORE_SECRET_KEY set
@@ -31,6 +31,8 @@ k8s-cluster: ## ClickHouse cluster lab on k8s
 	RUNTIME=k8s bash scripts/clickhouse_cluster_ops.sh all
 k8s-read: ## Mirrored read gradient (Mimir vs ClickHouse) on k8s
 	RUNTIME=k8s bash scripts/read_gradient.sh
+k8s-sweep: ## Mimir write throughput vs client concurrency on k8s
+	RUNTIME=k8s bash scripts/mimir_concurrency_sweep.sh
 k8s-observe: ## Maintenance snapshot (CH + Mimir) on k8s
 	RUNTIME=k8s bash scripts/observe.sh
 k8s-ps: ## Pod status

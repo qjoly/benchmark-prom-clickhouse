@@ -78,14 +78,33 @@ All figures are for the same 1.08 billion points (108 million rows, 10 metrics p
 
 ### Write
 
-| | ClickHouse | Mimir |
-|---|---|---|
-| Duration | 277 s | 5,270 s (87.8 min) |
-| Throughput | 3.90 M points/s | 205 k points/s |
+Measured paths for the same 1.08 billion points:
 
-ClickHouse ingested the whole dataset about 19 times faster. This is a backfill of historical
-data, close to a worst case for a pull-based TSDB. Real-time ingestion, where Mimir compacts and
-ships continuously, would look kinder to it.
+| Path | Duration | Throughput | Replication |
+|---|---|---|---|
+| ClickHouse, client ingest (TSBS) | 273 s | 3.95 M points/s | single node, RF=1 |
+| ClickHouse, cluster write (INSERT SELECT into Distributed) | +48 s | ~22 M points/s (server-side) | 2 shards, RF=2 |
+| Mimir, backfill (out-of-order) | 5,270 s | 205 k points/s | 3 nodes, RF=3 |
+| Mimir, real-time (append at head) | 5,292 s | 204 k points/s | 3 nodes, RF=3 |
+
+Read the ClickHouse and Mimir rows with the asymmetry in mind (see Caveats): the ClickHouse
+client path is single node at RF=1, and its cluster write is a server-side INSERT SELECT with no
+client protocol, while Mimir ingests over remote-write at RF=3. So a bare "19x" is not a
+like-for-like number. Two findings hold regardless of that asymmetry:
+
+- **Mimir's throughput ceiling is not an out-of-order artifact.** Real-time append (204 k/s) and
+  historical backfill (205 k/s) land within 0.5% of each other. Out-of-order only cost memory:
+  the first backfill ballooned the ingester working set and was evicted at 20 GiB, which is why
+  the working directory is now 60 GiB. The real-time run had a flat head and zero restarts.
+- **More client concurrency does not raise the ceiling.** A sweep at 8, 16, 32 and 48 workers
+  stayed flat around 180-188 k samples/s while Mimir's own CPU climbed from ~3.2 to ~5.1 cores.
+  Extra concurrency buys CPU burn, not throughput. The wall is server side: ingester CPU plus the
+  RF=3 write amplification (every sample stored three times). Scaling Mimir writes means more
+  ingester and distributor replicas, not more clients.
+
+Adding full RF=2 sharding and replication to ClickHouse costs only ~48 s of server-side work on
+top of the ingest, so even a replicated ClickHouse finishes the volume in minutes rather than the
+~88 minutes Mimir takes at RF=3.
 
 ### Storage
 
@@ -98,15 +117,16 @@ RF=2, while Mimir keeps one compacted copy in object storage with durability han
 
 ### Resource consumption during the write (from SigNoz)
 
-| | ClickHouse cluster | Mimir cluster |
+| | ClickHouse | Mimir |
 |---|---|---|
-| Average CPU | ~2.0 cores | ~5.5 cores |
-| Peak memory | ~1.0 GiB (busiest node) | ~0.79 GiB per pod |
-| CPU-time to ingest | ~560 core-seconds | ~28,700 core-seconds |
+| CPU, client ingest (single node) | ~1.45 cores on the busiest node | not applicable |
+| CPU, cluster write | ~2.3 cores across 4 nodes (RF=2 INSERT SELECT) | ~5.5 cores across 3 pods |
+| Peak memory | ~1.0 GiB (busiest node) | ~0.9 GiB per pod |
+| CPU-time for the full dataset | ~500 core-seconds (ingest + RF=2 replicate) | ~28,700 core-seconds (RF=3) |
 
-For the same data, Mimir spent roughly 51 times more CPU-time than ClickHouse. Part of that is
-the ingestion protocol (remote-write with protobuf and replication factor 3), part is the
-out-of-order backfill.
+Mimir spent roughly 50x more CPU-time than ClickHouse for the same data. The replication factor
+(3 vs 2) explains only about 1.5x of that. The rest is architectural: the per-sample remote-write
+path (protobuf, RF fan-out, TSDB head) against columnar batch inserts.
 
 ### Read (mirrored queries, correct metric names, 100,000 hosts)
 
@@ -124,18 +144,44 @@ collapse into the same label set and the query errors. In SQL it is one `GROUP B
 attempt the wide queries, Mimir needed its per-query fetch limits set to unlimited. Those limits
 exist precisely to stop this kind of analytical query from hurting a Prometheus store.
 
+These read numbers are single-shot (no repetition or percentiles) and the two engines are timed
+differently: ClickHouse server-side (`clickhouse-client --time`, no serialization) versus Mimir
+over full HTTP with JSON serialization. Treat them as order-of-magnitude, not precise ratios. A
+fair read benchmark still needs repeated runs with percentiles and the same transport on both
+sides (see Caveats).
+
 ### ClickHouse cluster operations (108 million rows, replicated)
 
 - `OPTIMIZE TABLE ... FINAL` across the cluster: 22 s.
 - Rebuilding a wiped replica (drop the local copy, recreate it, refetch about 1.5 GiB of parts
   from its peer through Keeper): 6 s.
 
+## Caveats
+
+These numbers come from a sandbox, not a controlled lab. Known limits that bound how far to trust
+the ratios:
+
+- **ClickHouse client ingest is single node, RF=1.** Stock TSBS cannot drive a clustered
+  ClickHouse client load: its loader derives the tag column list only while creating its own
+  tables, so it cannot target pre-made Distributed tables. The RF=2 sharded+replicated write is
+  therefore measured separately as a server-side `INSERT SELECT`, which pays no client protocol.
+- **Reads are single-shot and timed asymmetrically** (ClickHouse server-time versus Mimir full
+  HTTP+JSON). Order-of-magnitude only.
+- **Shared node.** A single 12 vCPU Talos node running dozens of other namespaces, at roughly 80%
+  CPU during the runs. cgroup throttling is possible and was not isolated.
+- **RustFS is one replica on `emptyDir`.** The "durability via S3" framing is nominal here.
+- **Storage was read shortly after ingest**, so Mimir blocks may not be fully compacted.
+- **Ops testing is one-sided:** ClickHouse compaction and replica rebuild are exercised; there is
+  no equivalent Mimir test (ingester loss, WAL replay, store-gateway restart).
+
 ## Verdict
 
-For bulk historical ingestion and analytical reads, ClickHouse won clearly: faster writes, far
-less CPU, more compact storage, and it is the only one of the two that actually completes wide
-aggregations. Mimir matched it on single-series lookups, which is the workload it is built for,
-and there both answer in single-digit milliseconds.
+For bulk ingestion and analytical reads, ClickHouse won clearly: much faster and far cheaper
+writes, more compact storage, and it is the only one of the two that actually completes wide
+aggregations. Mimir's ~205 k samples/s write ceiling is real, not an out-of-order or
+client-concurrency artifact (real-time and backfill matched, and adding workers did not help).
+Mimir matched ClickHouse on single-series lookups, which is the workload it is built for, and
+there both answer in single-digit milliseconds.
 
 None of this says Mimir is bad. It says the two tools are built for different jobs. Mimir is a
 Prometheus-compatible metrics store for live monitoring and alerting at high series counts.
@@ -270,7 +316,7 @@ Other useful settings: `CH_WORKERS`/`PROM_WORKERS` (parallelism), `QUERY_TYPE`,
 3. **Metric-name mismatch on the Mimir read path (invalidates TSBS reads).**
    `tsbs_load_prometheus` stores metrics WITHOUT the measurement prefix (`usage_user`),
    but the `victoriametrics` query generator targets `cpu_usage_*`. Mixing them makes every
-   Mimir query match nothing (empty results in ~2 ms) — a silent, misleading "win". The
+   Mimir query match nothing (empty results in ~2 ms), a silent, misleading "win". The
    authoritative cross-engine read comparison is therefore **`scripts/read_gradient.sh`**
    (`make read-gradient` / `make k8s-read`): hand-written, name-correct, mirrored PromQL/SQL
    along an index-escape gradient (single series → fan-out over all 100k series). It also
@@ -280,12 +326,12 @@ Other useful settings: `CH_WORKERS`/`PROM_WORKERS` (parallelism), `QUERY_TYPE`,
 
 `scripts/clickhouse_cluster_ops.sh {setup|compaction|rebuild|status|all}`:
 
-- **setup** — introspects the TSBS schema (`system.tables`/`system.columns`), recreates the table as
+- **setup**: introspects the TSBS schema (`system.tables`/`system.columns`), recreates the table as
   `ReplicatedMergeTree` `ON CLUSTER` + a `Distributed` table, and copies the data
   (sharding across 2 shards + replication RF=2).
-- **compaction** — measures the number of *parts* and the compression ratio **before/after**
+- **compaction**: measures the number of *parts* and the compression ratio **before/after**
   `OPTIMIZE … FINAL`, and shows the merges in progress (`system.merges`).
-- **rebuild** — drops the replica `chnode2`'s copy (`DROP TABLE … SYNC`), recreates it, and
+- **rebuild**: drops the replica `chnode2`'s copy (`DROP TABLE … SYNC`), recreates it, and
   **times the rebuild** from its peer via Keeper
   (`system.replicated_fetches`, `system.replication_queue`).
 
@@ -300,7 +346,7 @@ In `./results/`:
 | `query_clickhouse-*.txt`    | ClickHouse read latencies/throughput     |
 | `query_mimir-*.txt`         | Mimir read latencies/throughput          |
 
-At the end of a run TSBS prints the average throughput and the latency percentiles — that is the basis of
+At the end of a run TSBS prints the average throughput and the latency percentiles, that is the basis of
 the comparison. On-disk storage and the compression ratio are printed by the
 load scripts and by `make observe`.
 
@@ -313,7 +359,7 @@ make clean    # stops and REMOVES volumes + generated data/results
 
 ## Known limitations
 
-- A single ClickHouse Keeper node (no coordinator HA) — enough for a sandbox.
+- A single ClickHouse Keeper node (no coordinator HA), enough for a sandbox.
 - TSBS ClickHouse ingestion targets `chnode1` (single-node schema); sharding/replication is
   demonstrated by the cluster lab, not during the raw ingestion measurement.
 - The TSBS flags can vary depending on `TSBS_REF`: they are centralized in `scripts/*.sh`.
