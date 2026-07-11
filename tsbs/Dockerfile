@@ -1,5 +1,5 @@
 # Build the TSBS (Time Series Benchmark Suite) binaries from source.
-FROM golang:1.22-bookworm AS build
+FROM golang:1.26-bookworm AS build
 
 ARG TSBS_REF=master
 WORKDIR /src
