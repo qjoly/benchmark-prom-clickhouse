@@ -481,6 +481,24 @@ qualitative conclusions, but several items would move the ratios.
 - [ ] Fix the TSBS Mimir read path (metric-name mismatch `cpu_usage_*` vs `usage_*`) so the
       standard TSBS query runner is usable, instead of the hand-written gradient.
 
+### Reviewer follow-up (round 2), applies to V1 and V2
+
+- [ ] **Re-run the Mimir write concurrency sweep with disjoint now-anchored slices.** The sweep
+      re-pushed already-ingested samples, and exact duplicates short-circuit in the TSDB head
+      instead of doing real appends, so the flat 180-188k/s is not fresh ingestion. Each worker
+      level needs its own fresh (non-overlapping) time range.
+- [ ] **Verify Mimir's 6.0 GiB is not pre-dedup RF=3 block copies** (re-measure the bucket after
+      compaction), or soften the "~2x smaller per copy" compression claim, which currently rests
+      on that unverified number.
+- [ ] **Escalate the read gradient along Mimir's axis, not only ClickHouse's.** The gradient only
+      grows the analytical scan (ClickHouse's strength). Add the workloads a metrics store is built
+      for: a latest-value instant query across all 10k hosts; a data-age gradient (5 min vs 1 h vs
+      24 h, since the fresh-data re-run showed Mimir winning on head data); and selective
+      label-matcher queries.
+- [ ] **Add a counter workload for `rate()`/`increase()` math.** `cpu-only` is all gauges, so
+      PromQL's counter functions (where it shines and SQL gets painful) are untested. Use a TSBS
+      use case with counters, or synthesize one.
+
 ## Topology
 
 ```mermaid
