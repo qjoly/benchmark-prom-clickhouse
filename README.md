@@ -179,6 +179,17 @@ the ratios:
   HTTP+JSON). Order-of-magnitude only.
 - **Shared node.** A single 12 vCPU Talos node running dozens of other namespaces, at roughly 80%
   CPU during the runs. cgroup throttling is possible and was not isolated.
+- **Everything on one physical node, which penalizes Mimir more than ClickHouse.** Mimir is built
+  to scale horizontally: on a real cluster its three RF=3 ingesters would sit on separate machines,
+  spreading the 3x write amplification across 3x the hardware. Stacked on one 12 vCPU box they
+  contend for the same CPU, plus gossip/gRPC overhead that assumes a network. ClickHouse needs no
+  scale-out to perform (it used ~1 core). So the **throughput** ratios (the "19x" write) are the
+  numbers most likely to narrow on real multi-node hardware, where Mimir would scale up. The
+  **efficiency** ratios (CPU-time per sample ~50x, storage) are architectural and largely
+  node-count independent, so they are the more portable figures. Related, measured: a Distributed
+  ClickHouse read on this single node was *slower* than the single-node table (overhead without
+  real parallelism), so the mono-node ClickHouse reads reported here are its best case on this box,
+  not a handicap.
 - **RustFS is one replica on `emptyDir`.** The "durability via S3" framing is nominal here.
 - **Storage was read shortly after ingest**, so Mimir blocks may not be fully compacted.
 - **Ops testing is one-sided:** ClickHouse compaction and replica rebuild are exercised; there is
