@@ -307,6 +307,9 @@ Other useful settings: `CH_WORKERS`/`PROM_WORKERS` (parallelism), `QUERY_TYPE`,
    `mimir.yaml` opens `out_of_order_time_window: 40h`. To fix a precise range, set
    `TS_START`/`TS_END` in `.env` *and* increase the window accordingly (or use
    the loader's `--use-current-time` option, at the cost of the time dimension of the reads).
+   The computed range is persisted to `data/timerange.env` at generation time and reused by
+   query generation, so the query window matches the data even though loading takes a long time
+   between the two steps.
 
 2. **TSBS has no `run_queries_prometheus`.** Mimir ingestion goes through
    `tsbs_load_prometheus` (remote_write). The TSBS ClickHouse loader

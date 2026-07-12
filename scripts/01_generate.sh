@@ -2,7 +2,7 @@
 # Generate the TSBS dataset twice (same seed/scale/range): one serialization
 # for ClickHouse, one for Prometheus/Mimir. Gzipped output in ./data.
 source "$(dirname "$0")/lib.sh"
-compute_timerange
+compute_timerange fresh   # anchor a new range on "now" and persist it for 04_gen_queries.sh
 
 gen() {
   local fmt="$1" out="$2"

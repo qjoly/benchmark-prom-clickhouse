@@ -108,6 +108,8 @@ data:
     ruler_storage:
       backend: s3
       s3: { bucket_name: mimir-ruler }
+    # Keep this limits block in sync with mimir/mimir.yaml (docker). Only the
+    # memberlist section is intentionally different between the two.
     limits:
       ingestion_rate: 10000000
       ingestion_burst_size: 40000000

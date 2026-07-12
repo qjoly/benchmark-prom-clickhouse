@@ -1,3 +1,6 @@
+# Keep the `limits:` block in sync with the k8s ConfigMap in k8s/20-mimir.yaml.
+# The only intentional difference between the two files is the memberlist section
+# (static host list here for docker; dns+ discovery in k8s).
 multitenancy_enabled: false
 
 server:
@@ -65,3 +68,6 @@ limits:
   max_label_names_per_series: 60
   out_of_order_time_window: 40h
   creation_grace_period: 30m
+  max_fetched_chunks_per_query: 0
+  max_fetched_series_per_query: 0
+  max_fetched_chunk_bytes_per_query: 0

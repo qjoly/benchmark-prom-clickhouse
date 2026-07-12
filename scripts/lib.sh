@@ -82,15 +82,27 @@ node_sql() {
 # Legacy alias.
 chq() { node_sql "$1" "${2:-$CH_PRIMARY_NODE}"; }
 
-# Compute the time range. Anchored on "now" (UTC) unless explicitly overridden
-# via TS_START/TS_END in .env - required for Mimir to accept the backfill.
+# Compute the time range, anchored on "now" (UTC), and PERSIST it so that data
+# generation and query generation (minutes/hours apart) use the SAME window.
+# Recomputing "now" in each step would drift the query window past the data and
+# make late-window queries hit empty ranges.
+#   compute_timerange fresh  -> recompute and overwrite (used by generation)
+#   compute_timerange        -> reuse persisted range if present, else compute
+# An explicit TS_START/TS_END in .env always wins.
+TIMERANGE_FILE="${DATA_DIR}/timerange.env"
 compute_timerange() {
-  if [ -n "${TS_START:-}" ] && [ -n "${TS_END:-}" ]; then
-    export TS_START TS_END
-  else
+  local mode="${1:-reuse}"
+  if [ -z "${TS_START:-}" ] || [ -z "${TS_END:-}" ]; then
+    if [ "$mode" != "fresh" ]; then
+      local persisted; persisted="$(tsbs "cat '${TIMERANGE_FILE}' 2>/dev/null || true" | tr -d '\r')"
+      case "$persisted" in *TS_START=*) eval "$persisted" ;; esac
+    fi
+  fi
+  if [ -z "${TS_START:-}" ] || [ -z "${TS_END:-}" ]; then
     TS_END="$(tsbs "date -u +%Y-%m-%dT%H:%M:%SZ" | tr -d '\r')"
     TS_START="$(tsbs "date -u -d '-${DURATION_HOURS} hours' +%Y-%m-%dT%H:%M:%SZ" | tr -d '\r')"
-    export TS_START TS_END
   fi
+  export TS_START TS_END
+  tsbs "mkdir -p '${DATA_DIR}'; printf 'TS_START=%s\nTS_END=%s\n' '${TS_START}' '${TS_END}' > '${TIMERANGE_FILE}'"
   log "Time range: $TS_START -> $TS_END  (scale=$SCALE, interval=$LOG_INTERVAL)"
 }
