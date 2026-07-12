@@ -20,8 +20,7 @@ which generates **a single dataset** injected into both systems for a fair compa
 [Configuration](#configuration-env) ·
 [Three important subtleties](#three-important-subtleties-already-handled) ·
 [ClickHouse cluster operations lab](#clickhouse-cluster-operations-lab) ·
-[Where to read the results](#where-to-read-the-results) · [Cleanup](#cleanup) ·
-[Known limitations](#known-limitations)
+[Where to read the results](#where-to-read-the-results) · [Cleanup](#cleanup)
 
 ## The experiment
 
@@ -341,6 +340,11 @@ the ratios:
   at 203 k/s, matching the backfill, so the 205 k/s ceiling is confirmed protocol/RF-bound rather
   than an out-of-order artifact.
 
+A few limits are operational properties of the sandbox stack rather than of the measurement:
+
+- **A single ClickHouse Keeper node** (no coordinator HA), enough for a sandbox.
+- **TSBS flags vary with `TSBS_REF`** and are centralized in `scripts/*.sh`.
+
 ## Verdict
 
 For bulk ingestion and analytical reads, ClickHouse won clearly: much faster and far cheaper
@@ -359,11 +363,10 @@ Prometheus ecosystem; point an analytics workload at Mimir and you hit its guard
 
 ## TODO / possible improvements
 
-Future work, not current limits. The bounds on the numbers as measured are in
-[Caveats](#caveats); the operational limits of the sandbox stack are in
-[Known limitations](#known-limitations). This section is what would make the numbers more
-trustworthy or the comparison broader. Nothing here is expected to flip the qualitative
-conclusions, but several items would move the ratios.
+Future work, not current limits. The bounds on the numbers as measured, and the operational
+limits of the sandbox stack, are both in [Caveats](#caveats). This section is what would make the
+numbers more trustworthy or the comparison broader. Nothing here is expected to flip the
+qualitative conclusions, but several items would move the ratios.
 
 ### Experimental rigor
 
@@ -598,14 +601,3 @@ load scripts and by `make observe`.
 make down     # stops, keeps the volumes
 make clean    # stops and REMOVES volumes + generated data/results
 ```
-
-## Known limitations
-
-For the limits that affect how you read the *numbers* (single-node data, durability model,
-one dataset shape), see [Caveats](#caveats). The points below are
-operational limits of the sandbox stack itself:
-
-- A single ClickHouse Keeper node (no coordinator HA), enough for a sandbox.
-- TSBS ClickHouse ingestion targets one node (single-node schema); sharding/replication is
-  demonstrated by the cluster lab, not during the raw ingestion measurement.
-- The TSBS flags can vary depending on `TSBS_REF`: they are centralized in `scripts/*.sh`.

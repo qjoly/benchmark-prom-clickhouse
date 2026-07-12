@@ -115,8 +115,8 @@ save(fig, "read_concurrency.png")
 
 # 5) Storage footprint (GiB).
 fig, ax = plt.subplots(figsize=(5.5, 4))
-bars(ax, ["ClickHouse\n(1 copy, 4.4x)", "Mimir\n(RustFS blocks)"], [2.88, 6.0], [CH, MI],
-     lambda v: f"{v:.2f} GiB")
+bars(ax, ["ClickHouse\n(1 copy, 4.4x)", "ClickHouse\n(RF=2)", "Mimir\n(RustFS blocks)"],
+     [2.88, 5.76, 6.0], [CH, CH, MI], lambda v: f"{v:.2f} GiB")
 ax.set_ylabel("on-disk size (GiB)")
 ax.set_title("Storage for 1.08 B points")
 save(fig, "storage.png")
