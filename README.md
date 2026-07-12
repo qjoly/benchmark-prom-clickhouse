@@ -285,6 +285,64 @@ Prometheus-compatible metrics store for live monitoring and alerting at high ser
 ClickHouse is an analytical database. Point a metrics workload at ClickHouse and you give up the
 Prometheus ecosystem; point an analytics workload at Mimir and you hit its guard rails.
 
+## TODO / possible improvements
+
+Everything below would make the numbers more trustworthy or the comparison broader. It doubles as
+the list of known limitations, framed as work. Nothing here is expected to flip the qualitative
+conclusions, but several would move the ratios.
+
+### Experimental rigor
+
+- [ ] Run on dedicated, multi-node hardware (not one shared 12 vCPU node). This is the big one: it
+      lets Mimir spread its RF=3 ingesters and lets ClickHouse parallelize distributed reads.
+- [ ] N>=3 repetitions per measurement with variance / confidence intervals, not single runs.
+- [ ] Pin equal CPU/memory budgets per cluster and quantify noisy-neighbour interference.
+- [ ] Assert data completeness before comparing (count in Mimir == rows in ClickHouse x metrics),
+      not just spot checks.
+
+### Write
+
+- [ ] Ingest ClickHouse at equal replication (RF=3) for a strict like-for-like, or normalize
+      throughput per written copy.
+- [ ] Drive a clustered ClickHouse client ingest (into a Distributed table), which stock TSBS
+      cannot do; needs a patched loader or a different generator.
+- [ ] Measure a genuine real-time, in-order-at-head write (generate a now-anchored dataset, since
+      `--use-current-time` is a no-op here) and compare to the out-of-order backfill.
+- [ ] Steady-state continuous ingestion over hours/days: watch ClickHouse background merges and
+      Mimir compaction under sustained load, not just a one-shot bulk (see the merge tax).
+- [ ] Tune ClickHouse for a metrics pattern (`async_insert`, batch sizing) and re-measure.
+
+### Read
+
+- [ ] Query under concurrency (many simultaneous clients, QPS) rather than serial single queries.
+- [ ] Cold vs warm cache separated and controlled on both engines.
+- [ ] More query shapes: real Grafana dashboard patterns, instant queries, high-cardinality
+      selectors, `double-groupby-all`, `high-cpu-all`.
+- [ ] Distributed-read ClickHouse on real multi-node hardware (here it was slower on one node).
+- [ ] Pre-aggregation at scale on both sides: ClickHouse materialized views and Mimir recording
+      rules over large volumes / long windows, where they actually pay off.
+
+### Operations and resilience (currently one-sided)
+
+- [ ] Mimir failure/ops tests to match the ClickHouse ones: ingester loss + WAL replay,
+      store-gateway restart, compactor behaviour.
+- [ ] ClickHouse cluster growth (2 -> 4 shards). There is no rebalance, so this means weighting
+      the load balancer or recreating a cluster and copying data; `chproxy` helps. Sharding
+      distribution depends entirely on the key (we saw ~50/50 with a high-cardinality key; skewed
+      keys give 60/40 or worse).
+- [ ] 3-node ClickHouse Keeper (HA) instead of one, and Mimir with more distributor/ingester
+      replicas.
+- [ ] Higher cardinality and series churn over time, which is Mimir's home turf.
+
+### Infra / reproducibility
+
+- [ ] Persistent volumes instead of `emptyDir`, and a real object store (RustFS is a single
+      `emptyDir` replica here, so "durability via S3" is nominal).
+- [ ] Configure Mimir's caches with a sized memcached and confirm the effect at scale (here it was
+      marginal on small windows).
+- [ ] Fix the TSBS Mimir read path (metric-name mismatch `cpu_usage_*` vs `usage_*`) so the
+      standard TSBS query runner is usable, instead of the hand-written gradient.
+
 ## Topology
 
 ```mermaid
