@@ -38,8 +38,8 @@ def bars(ax, labels, values, colors, valfmt):
 # 1) Write throughput (points/s), log scale.
 fig, ax = plt.subplots(figsize=(7, 4))
 labels = ["ClickHouse\nclient (RF=1)", "ClickHouse\ncluster RF=2\n(server-side)",
-          "Mimir\nbackfill (RF=3)", "Mimir\nreal-time (RF=3)"]
-vals = [3.95e6, 22e6, 0.205e6, 0.204e6]
+          "Mimir mono\n(RF=1)", "Mimir cluster\n(RF=3)"]
+vals = [3.95e6, 22e6, 0.296e6, 0.205e6]
 bars(ax, labels, vals, [CH, CH, MI, MI], lambda v: f"{v/1e6:.2f}M" if v >= 1e6 else f"{v/1e3:.0f}k")
 ax.set_yscale("log")
 ax.set_ylabel("points / second (log)")
@@ -47,19 +47,19 @@ ax.set_title("Write throughput - same 1.08 B points")
 save(fig, "write_throughput.png")
 
 # 2) CPU-time to ingest the full dataset (core-seconds), log scale.
-fig, ax = plt.subplots(figsize=(5.5, 4))
-bars(ax, ["ClickHouse\n(ingest + RF=2)", "Mimir\n(RF=3)"], [500, 28700], [CH, MI],
-     lambda v: f"{v:,.0f}")
+fig, ax = plt.subplots(figsize=(6.5, 4))
+bars(ax, ["ClickHouse\n(ingest+RF=2)", "Mimir mono\n(RF=1)", "Mimir cluster\n(RF=3)"],
+     [500, 10800, 28700], [CH, MI, MI], lambda v: f"{v:,.0f}")
 ax.set_yscale("log")
 ax.set_ylabel("CPU-time (core-seconds, log)")
-ax.set_title("CPU cost to ingest 1.08 B points (~50x)")
+ax.set_title("CPU cost to ingest 1.08 B points")
 save(fig, "cpu_time.png")
 
 # 3) Read latency gradient (ms), grouped bars, log scale.
 fig, ax = plt.subplots(figsize=(7.5, 4))
 groups = ["single series\n1h", "1 metric / all hosts\n1h", "1 metric / all hosts\n4h"]
-mimir = [7, 817, 2705]
-ch = [6, 211, 361]
+mimir = [4, 753, 2524]
+ch = [6, 245, 451]
 x = range(len(groups))
 w = 0.38
 b1 = ax.bar([i - w/2 for i in x], mimir, w, color=MI, label="Mimir (PromQL)")
@@ -71,7 +71,7 @@ for bs in (b1, b2):
 ax.set_yscale("log")
 ax.set_xticks(list(x)); ax.set_xticklabels(groups)
 ax.set_ylabel("latency (ms, log)")
-ax.set_title("Read latency - mirrored queries (100k hosts)")
+ax.set_title("Read latency p50 - mirrored queries, HTTP both sides (100k hosts)")
 ax.legend()
 save(fig, "read_gradient.png")
 
