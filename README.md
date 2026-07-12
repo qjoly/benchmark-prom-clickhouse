@@ -299,6 +299,38 @@ are a floor, not a ceiling.
 - Rebuilding a wiped replica (drop the local copy, recreate it, refetch about 1.5 GiB of parts
   from its peer through Keeper): 6 s.
 
+### Fairness re-runs (reviewer follow-up)
+
+A reviewer flagged three ways the comparison might not be apples-to-apples: unequal write
+durability, reads that skip work on the ClickHouse side, and a Go/cgroup CPU-throttle that could
+handicap Mimir. Each was measured. None flips the qualitative result.
+
+- **Equal write durability (quorum vs async).** ClickHouse's cluster write acked asynchronously
+  (`insert_quorum=0`: local replica + Keeper, peers catch up in the background) while Mimir waits
+  for a quorum of ingesters. Re-running the 108M-row `INSERT SELECT` into a 1-shard-3-replica table
+  with `insert_quorum=2` (matching Mimir's 2-of-3) took **67 s, identical to the async 67 s**. On
+  this single physical node the three replicas are co-located, so replication keeps pace with the
+  insert and quorum costs nothing here. It would cost more across a real network; folded into the
+  multi-node TODO.
+- **Symmetric read work (tag resolution + labels).** The read gradient resolved the
+  hostname-to-id lookup outside the timed query and grouped by integer `tags_id`, work Mimir pays
+  on every query via its label index. Redone fairly: a single-series query written idiomatically
+  (`tags_id IN (SELECT id FROM tags WHERE hostname=...)`) costs ~5 ms versus ~4 ms with the id
+  pre-resolved, so the lookup is essentially free (the naive `JOIN` that ballooned to 163 ms was a
+  bad query plan, not an engine cost). A fan-out that must emit hostnames does pay the join
+  (~1.7x). Mirrored over fresh in-order data, HTTP both sides, p50/p95: single series **CH 7.1/7.3
+  vs Mimir 2.3/2.4 ms** (Mimir wins point lookups on head data), one-metric-all-hosts **CH 74.8/87.8
+  vs Mimir 376/461 ms** (ClickHouse wins fan-out ~5x, join included). Both directions hold.
+- **Go/cgroup CPU throttle (GOMAXPROCS).** The Mimir pods ran with a 3-core cgroup limit but no
+  `GOMAXPROCS`, so Go sized itself to the node's 12 cores. Removing the CPU limit entirely (Go now
+  matches the 12 available cores, no CFS throttle) and re-ingesting a fresh now-anchored slice at
+  SCALE=10000: throughput was **212 k samples/s versus ~205 k/s before (+3.4%, negligible)**, and
+  CPU fell from ~26.6 to **~23.7 µcore-seconds/sample** (~11% of the CPU was throttle overhead).
+  The ~205 k/s ceiling is therefore the remote-write + RF path, not the cgroup limit (the ingest
+  averaged ~1.8 cores/pod, under the old 3-core cap). Mimir's per-sample CPU is still ~43x
+  ClickHouse's, so the efficiency gap is architectural. The manifests now ship without the Mimir
+  CPU limit (`k8s/20-mimir.yaml`).
+
 ## Caveats
 
 These numbers come from a sandbox, not a controlled lab. Known limits that bound how far to trust
