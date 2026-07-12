@@ -145,6 +145,24 @@ To separate the cost of clustering from the engine itself, a single-instance mon
 Mimir about 1.4x faster and ~2.6x cheaper, but it is still ~22x the CPU-time of ClickHouse. Most
 of the gap is the engine and protocol, not the cluster. (See `k8s/40-mimir-mono.yaml`.)
 
+### Continuous ingestion and ClickHouse's merge tax
+
+The bulk write above uses large batches, a best case for ClickHouse: few parts, little merging.
+A metrics-like continuous stream is many small writes, which create many small parts that
+ClickHouse then merges in the background. Loading the same 1.44M-row slice both ways
+(`scripts/merge_tax.sh`):
+
+| Batch size | Wall time | Parts created | Merges | Merge CPU-time |
+|---|---|---|---|---|
+| 10,000 (bulk) | 4 s | 144 | 25 | 2.8 s |
+| 200 (scrape-like) | 16 s | 7,344 | 1,257 | 29 s |
+
+Small batches create ~50x more parts and ~10x more merge work, and the load is ~4x slower. So the
+headline bulk write numbers understate ClickHouse's steady-state cost under continuous small-write
+ingestion. It is still faster than Mimir here (about 900k vs 205k points/s even at batch=200), but
+the gap narrows and the background merge CPU is real. A real metrics deployment would tune
+`batch-size` and `async_insert`.
+
 ### Read (mirrored queries, correct metric names, 100,000 hosts)
 
 Both engines timed the same way: over HTTP, including result serialization and transfer (Mimir
@@ -208,6 +226,13 @@ the ratios:
 - **Storage was read shortly after ingest**, so Mimir blocks may not be fully compacted.
 - **Ops testing is one-sided:** ClickHouse compaction and replica rebuild are exercised; there is
   no equivalent Mimir test (ingester loss, WAL replay, store-gateway restart).
+- **Raw baseline, no engine-specific optimizations.** Neither side uses its pre-aggregation
+  tooling: no ClickHouse materialized views / AggregatingMergeTree, no Mimir recording rules.
+  Both would speed up the aggregation reads; this is a deliberate apples-to-apples floor, not each
+  engine's tuned ceiling.
+- **Write figures are one-shot bulk (large batches).** Continuous small-write ingestion shifts
+  cost into ClickHouse background merges (see "the merge tax" above); a steady-state multi-day run
+  was not modeled.
 
 ## Verdict
 
