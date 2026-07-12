@@ -48,8 +48,8 @@ save(fig, "write_throughput.png")
 
 # 2) CPU-time to ingest the full dataset (core-seconds), log scale.
 fig, ax = plt.subplots(figsize=(6.5, 4))
-bars(ax, ["ClickHouse\n(ingest+RF=2)", "Mimir mono\n(RF=1)", "Mimir cluster\n(RF=3)"],
-     [500, 10800, 28700], [CH, MI, MI], lambda v: f"{v:,.0f}")
+bars(ax, ["ClickHouse\n(ingest+RF=3)", "Mimir mono\n(RF=1)", "Mimir cluster\n(RF=3)"],
+     [590, 10800, 28700], [CH, MI, MI], lambda v: f"{v:,.0f}")
 ax.set_yscale("log")
 ax.set_ylabel("CPU-time (core-seconds, log)")
 ax.set_title("CPU cost to ingest 1.08 B points")
@@ -71,7 +71,7 @@ for bs in (b1, b2):
 ax.set_yscale("log")
 ax.set_xticks(list(x)); ax.set_xticklabels(groups)
 ax.set_ylabel("latency (ms, log)")
-ax.set_title("Read latency p50 - mirrored queries, HTTP both sides (100k hosts)")
+ax.set_title("Read latency p50 - mirrored queries, HTTP both sides (100k series)")
 ax.legend()
 save(fig, "read_gradient.png")
 

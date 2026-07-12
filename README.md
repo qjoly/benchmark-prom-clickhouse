@@ -101,9 +101,13 @@ Measured paths for the same 1.08 billion points:
 
 **Equal replication (RF=3).** Replicating ClickHouse to RF=3 (108M rows to three replicas,
 324M row-copies) took 82 s of server-side work on top of the client ingest, so a fully RF=3
-ClickHouse lands the dataset in roughly 355 s and about 590 core-seconds. Even at the same RF=3
-as Mimir, that is ~15x faster and ~49x cheaper in CPU than Mimir's cluster run. The RF asymmetry
-is not what drives the gap.
+ClickHouse lands the **full 1.08 B points** in roughly 355 s and about 590 core-seconds. Even at
+the same RF=3 as Mimir, that is ~15x faster and ~49x cheaper in CPU than Mimir's cluster run. The
+RF asymmetry is not what drives the gap.
+
+(Watch the table: the Mimir real-time row is also 355 s, but that is for a 72M-point now-anchored
+slice, not the full dataset. Full-scale Mimir at 203 k/s would take ~5,300 s, in line with the
+backfill. The two 355 s figures are a coincidence, not parity.)
 
 Read the ClickHouse and Mimir rows with the asymmetry in mind (see Caveats): the ClickHouse
 client path is single node, and its cluster writes are server-side INSERT SELECT with no client
@@ -127,12 +131,16 @@ top of the ingest, so even a replicated ClickHouse finishes the volume in minute
 
 ### Storage
 
-| | ClickHouse (one copy) | Mimir (RustFS blocks) |
+| | ClickHouse | Mimir (RustFS blocks) |
 |---|---|---|
-| On disk | 2.88 GiB (4.4x compression) | 6.0 GiB |
+| On disk, one copy | 2.88 GiB (4.4x compression) | 6.0 GiB |
+| On disk, as replicated | ~5.76 GiB (RF=2) | 6.0 GiB (one compacted copy, S3-durable) |
 
-Different durability models, so read this loosely: ClickHouse replicates across the cluster at
-RF=2, while Mimir keeps one compacted copy in object storage with durability handled by S3.
+The real ClickHouse win here is **compression** (4.4x): one copy is ~2x smaller than Mimir's
+blocks. Total footprint is a different story and depends on the durability model. ClickHouse
+stores RF=2 on cluster disks (~5.76 GiB), while Mimir keeps a single compacted copy in object
+storage and leans on S3 for durability. Counting replication, the two land close together, so
+don't read the 2.88-vs-6.0 gap as a 2x storage saving.
 
 ### Resource consumption during the write (from SigNoz)
 
@@ -141,17 +149,19 @@ RF=2, while Mimir keeps one compacted copy in object storage with durability han
 | CPU, client ingest (single node) | ~1.45 cores on the busiest node | not applicable |
 | CPU, cluster write | ~2.3 cores across 4 nodes (RF=2 INSERT SELECT) | ~5.5 cores across 3 pods |
 | Peak memory | ~1.0 GiB (busiest node) | ~0.9 GiB per pod |
-| CPU-time for the full dataset | ~500 core-seconds (ingest + RF=2 replicate) | ~28,700 core-seconds (RF=3) |
+| CPU-time for the full dataset | ~590 core-seconds (ingest + RF=3 replicate) | ~28,700 core-seconds (RF=3) |
 
-Mimir spent roughly 50x more CPU-time than ClickHouse for the same data. The replication factor
-(3 vs 2) explains only about 1.5x of that. The rest is architectural: the per-sample remote-write
-path (protobuf, RF fan-out, TSDB head) against columnar batch inserts.
+At equal replication (RF=3 on both sides), Mimir spent ~49x more CPU-time than ClickHouse for the
+same data (~590 vs ~28,700 core-seconds). Since the RF is now equal, that whole gap is
+architectural, not replication: the per-sample remote-write path (protobuf, RF fan-out, TSDB head)
+against columnar batch inserts. (Measured directly, the ClickHouse ingest + RF=2 replicate was
+~500 core-seconds; the +90 to RF=3 is the third copy.)
 
 To separate the cost of clustering from the engine itself, a single-instance monolithic Mimir
 (RF=1, no gossip) was also run: it ingested at 296 k/s using ~10,800 core-seconds, versus the
 3-node RF=3 cluster's 205 k/s and ~28,700 core-seconds. So dropping clustering and RF=3 makes
-Mimir about 1.4x faster and ~2.6x cheaper, but it is still ~22x the CPU-time of ClickHouse. Most
-of the gap is the engine and protocol, not the cluster. (See `k8s/40-mimir-mono.yaml`.)
+Mimir about 1.4x faster and ~2.6x cheaper, but it is still ~18x the CPU-time of the RF=3 ClickHouse.
+Most of the gap is the engine and protocol, not the cluster. (See `k8s/40-mimir-mono.yaml`.)
 
 ### Continuous ingestion and ClickHouse's merge tax
 
@@ -289,7 +299,7 @@ the ratios:
   scale-out to perform (it used ~1 core). So the **throughput** ratios are the numbers most likely
   to narrow on real multi-node hardware, where Mimir would scale up (the bulk write gap is ~19x
   single-node RF=1 vs Mimir RF=3, ~15x at equal RF=3, and ~2.5x under continuous small writes). The
-  **efficiency** ratios (CPU-time per sample ~50x, storage) are architectural and largely
+  **efficiency** ratios (CPU-time per sample ~49x, storage) are architectural and largely
   node-count independent, so they are the more portable figures. Related, measured: a Distributed
   ClickHouse read on this single node was *slower* than the single-node table (overhead without
   real parallelism), so the mono-node ClickHouse reads reported here are its best case on this box,
