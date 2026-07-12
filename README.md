@@ -94,19 +94,25 @@ Measured paths for the same 1.08 billion points:
 |---|---|---|---|
 | ClickHouse, client ingest (TSBS) | 273 s | 3.95 M points/s | single node, RF=1 |
 | ClickHouse, cluster write (INSERT SELECT into Distributed) | +48 s | ~22 M points/s (server-side) | 2 shards, RF=2 |
-| Mimir, backfill (out-of-order) | 5,270 s | 205 k points/s | 3 nodes, RF=3 |
-| Mimir, real-time (append at head) | 5,292 s | 204 k points/s | 3 nodes, RF=3 |
+| Mimir, backfill (out-of-order), 3-node cluster | 5,270 s | 205 k points/s | 3 nodes, RF=3 |
+| Mimir, second cluster run | 5,292 s | 204 k points/s | 3 nodes, RF=3 |
 | Mimir, single instance (monolithic) | 3,645 s | 296 k points/s | 1 instance, RF=1 |
+
+The second Mimir run was meant to be real-time (append at head) via `tsbs_load_prometheus
+--use-current-time`, but that flag is a no-op in this TSBS build: the data kept its original
+timestamps, so it was effectively a second backfill. A genuine real-time write was therefore not
+measured. Treat 205 k/s as Mimir's ingest ceiling for this dataset regardless of timestamp mode.
 
 Read the ClickHouse and Mimir rows with the asymmetry in mind (see Caveats): the ClickHouse
 client path is single node at RF=1, and its cluster write is a server-side INSERT SELECT with no
 client protocol, while Mimir ingests over remote-write at RF=3. So a bare "19x" is not a
-like-for-like number. Two findings hold regardless of that asymmetry:
+like-for-like number. Two findings still hold:
 
-- **Mimir's throughput ceiling is not an out-of-order artifact.** Real-time append (204 k/s) and
-  historical backfill (205 k/s) land within 0.5% of each other. Out-of-order only cost memory:
-  the first backfill ballooned the ingester working set and was evicted at 20 GiB, which is why
-  the working directory is now 60 GiB. The real-time run had a flat head and zero restarts.
+- **The ~205 k/s ceiling is remote-write plus RF=3 bound, not memory or timestamp mode.** Both
+  cluster runs landed within 0.5% of each other. Out-of-order backfill only cost memory: the first
+  run ballooned the ingester working set and was evicted at 20 GiB, which is why the working
+  directory is now 60 GiB. We could not cleanly isolate a true real-time (in-order) write because
+  `--use-current-time` did not shift timestamps.
 - **More client concurrency does not raise the ceiling.** A sweep at 8, 16, 32 and 48 workers
   stayed flat around 180-188 k samples/s while Mimir's own CPU climbed from ~3.2 to ~5.1 cores.
   Extra concurrency buys CPU burn, not throughput. The wall is server side: ingester CPU plus the
@@ -209,11 +215,12 @@ slower.
 
 Mimir's counterpart is recording rules (`scripts/mimir_rule.sh`): a rule that pre-computes
 `avg_over_time(usage_user[1m])` every minute, the same temporal downsampling as the ClickHouse
-rollup. The rule loads and evaluates cleanly (health "ok"), but recording rules only pre-compute
-going forward, and on this single-node deployment the freshly-fed current-time data was not
-reliably queryable back (the recent-data vs blocks gap in the caveats), so the recorded-read
-comparison could not be completed. Mechanically it is the right analog; a steady-state multi-hour
-deployment would let it pay off like the rollup does.
+rollup. Running it end to end (a rule recording while a now-anchored dataset was ingested), the
+recorded series `usage_user:avg_1m` was populated and queryable, and an "avg per host over the
+window" read was 77 ms from the recorded metric vs 60 ms computing it raw. So at this small tested
+scale (2,000 hosts, ~13 min) the recording rule did not help either, for the same reason as the
+ClickHouse rollup on small windows: the raw path is already fast. A large steady-state deployment
+is where both pre-aggregation tools pay off; that was not run.
 
 The point stands either way: both engines have headroom via pre-aggregation, so the raw numbers
 are a floor, not a ceiling.
@@ -259,13 +266,17 @@ the ratios:
 - **Write figures are one-shot bulk (large batches).** Continuous small-write ingestion shifts
   cost into ClickHouse background merges (see "the merge tax" above); a steady-state multi-day run
   was not modeled.
+- **No genuine real-time Mimir write.** `tsbs_load_prometheus --use-current-time` is a no-op in
+  this build (it does not shift timestamps), so the "real-time" run was another backfill. A true
+  in-order-at-head write, which might be cheaper than out-of-order, was not measured. Ingest
+  throughput was ~identical regardless, so the 205 k/s ceiling still stands.
 
 ## Verdict
 
 For bulk ingestion and analytical reads, ClickHouse won clearly: much faster and far cheaper
 writes, more compact storage, and it is the only one of the two that actually completes wide
 aggregations. Mimir's ~205 k samples/s write ceiling is real, not an out-of-order or
-client-concurrency artifact (real-time and backfill matched, and adding workers did not help).
+client-concurrency artifact (both cluster runs matched, and adding workers did not help).
 Mimir matched ClickHouse on single-series lookups, which is the workload it is built for, and
 there both answer in single-digit milliseconds.
 
@@ -391,8 +402,9 @@ Other useful settings: `CH_WORKERS`/`PROM_WORKERS` (parallelism), `QUERY_TYPE`,
    (like Prometheus) refuses backfill outside its window. `scripts/01_generate.sh` **therefore
    anchors the time range on "now"** (`now - DURATION_HOURS` → `now`) and
    `mimir.yaml` opens `out_of_order_time_window: 40h`. To fix a precise range, set
-   `TS_START`/`TS_END` in `.env` *and* increase the window accordingly (or use
-   the loader's `--use-current-time` option, at the cost of the time dimension of the reads).
+   `TS_START`/`TS_END` in `.env` *and* increase the window accordingly. (The loader's
+   `--use-current-time` flag looks like it would help here, but it is a no-op in this TSBS build:
+   it does not shift timestamps. Generate a now-anchored range instead.)
    The computed range is persisted to `data/timerange.env` at generation time and reused by
    query generation, so the query window matches the data even though loading takes a long time
    between the two steps.
