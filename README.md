@@ -10,6 +10,19 @@ Local sandbox to compare, under equivalent load, a Prometheus-compatible TSDB
 The benchmark engine is [TSBS](https://github.com/timescale/tsbs) (use-case `cpu-only`),
 which generates **a single dataset** injected into both systems for a fair comparison.
 
+## Contents
+
+**Findings:** [The experiment](#the-experiment) · [Results](#results) · [Caveats](#caveats) ·
+[Verdict](#verdict) · [TODO / possible improvements](#todo--possible-improvements)
+
+**Running it:** [Topology](#topology) · [Prerequisites](#prerequisites) ·
+[Quick start](#quick-start) · [On Kubernetes](#on-kubernetes-recommended-for-the-1-bn-run) ·
+[Configuration](#configuration-env) ·
+[Three important subtleties](#three-important-subtleties-already-handled) ·
+[ClickHouse cluster operations lab](#clickhouse-cluster-operations-lab) ·
+[Where to read the results](#where-to-read-the-results) · [Cleanup](#cleanup) ·
+[Known limitations](#known-limitations)
+
 ## The experiment
 
 One dataset, generated once by TSBS (`cpu-only`, 10,000 hosts, 30 hours at a 10s interval),
@@ -93,11 +106,17 @@ Measured paths for the same 1.08 billion points:
 | Path | Duration | Throughput | Replication |
 |---|---|---|---|
 | ClickHouse, client ingest (TSBS) | 273 s | 3.95 M points/s | single node, RF=1 |
-| ClickHouse, cluster write RF=2 (INSERT SELECT into Distributed) | +48 s | ~22 M points/s (server-side) | 2 shards, RF=2 |
-| ClickHouse, cluster write RF=3 (INSERT SELECT, replicate) | +82 s | server-side | 1 shard, RF=3 |
+| ClickHouse, cluster write RF=2 (INSERT SELECT into Distributed) | +48 s † | ~22 M points/s (server-side) | 2 shards × 2 replicas ‡ |
+| ClickHouse, cluster write RF=3 (INSERT SELECT, replicate) | +82 s † | ~13 M points/s (server-side) | 1 shard × 3 replicas ‡ |
 | Mimir, backfill (out-of-order), 3-node cluster | 5,270 s | 205 k points/s | 3 nodes, RF=3 |
 | Mimir, real-time in-order (now-anchored, 72M points) | 355 s | 203 k points/s | 3 nodes, RF=3 |
 | Mimir, single instance (monolithic) | 3,645 s | 296 k points/s | 1 instance, RF=1 |
+
+† `+N s` is additional server-side work on top of the 273 s client ingest (the INSERT SELECT that
+shards and replicates the already-loaded rows), not a standalone run.
+‡ Both are layouts of the same 4-node ClickHouse cluster: RF=2 uses 2 shards × 2 replicas (all 4
+nodes); RF=3 uses 1 shard × 3 replicas (3 of the 4). Throughput is in distinct points/s, so the
+RF=3 figure looks lower because the same 82 s writes a third full copy (324M row-copies).
 
 **Equal replication (RF=3).** Replicating ClickHouse to RF=3 (108M rows to three replicas,
 324M row-copies) took 82 s of server-side work on top of the client ingest, so a fully RF=3
@@ -209,9 +228,11 @@ runs after 2 warm-ups. See `scripts/read_gradient.sh`.
 | Single series (1 host, 1 metric, 1h) | 4 / 6 ms | 6 / 7 ms | tie |
 | 1 metric, all hosts (1h) | 753 / 817 ms | 245 / 334 ms | CH ~3.1x |
 | 1 metric, all hosts (4h) | 2,524 / 2,610 ms | 451 / 565 ms | CH ~5.6x |
-| 10 metrics, all hosts (1h) | not expressible in one PromQL query | ~1 s | CH only |
+| 10 metrics, all hosts (1h) | not expressible in one PromQL query | ~1 s (approx) * | CH only |
 
 (Mimir figures are with its memcached caches enabled, see below.)
+\* This row has no Mimir counterpart to mirror, so it is a single rough timing, not a p50/p95 over
+repeated runs like the others. Read it as order-of-magnitude only.
 
 The gap widens as the window grows, because Mimir scales with the number of samples it has to
 pull while ClickHouse stays roughly flat. The full ten-metric aggregation cannot be written as a
@@ -338,9 +359,11 @@ Prometheus ecosystem; point an analytics workload at Mimir and you hit its guard
 
 ## TODO / possible improvements
 
-Everything below would make the numbers more trustworthy or the comparison broader. It doubles as
-the list of known limitations, framed as work. Nothing here is expected to flip the qualitative
-conclusions, but several would move the ratios.
+Future work, not current limits. The bounds on the numbers as measured are in
+[Caveats](#caveats); the operational limits of the sandbox stack are in
+[Known limitations](#known-limitations). This section is what would make the numbers more
+trustworthy or the comparison broader. Nothing here is expected to flip the qualitative
+conclusions, but several items would move the ratios.
 
 ### Experimental rigor
 
@@ -420,7 +443,10 @@ flowchart TB
     TSBS -->|"native INSERT :9000"| CHN
 ```
 
-| Component        | Role                                    | Host port |
+Docker Compose service names and host ports (the k8s run uses Services instead, see the note
+below the table):
+
+| Component        | Role                                    | Host port (Docker Compose) |
 |------------------|-----------------------------------------|-----------|
 | `mimir-gw`       | nginx gateway (write + PromQL)          | 9009      |
 | `chnode1`        | ClickHouse node (HTTP / native)         | 8123 / 9000 |
