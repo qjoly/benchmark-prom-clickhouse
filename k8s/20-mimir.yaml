@@ -91,7 +91,22 @@ data:
       backend: s3
       s3: { bucket_name: mimir-blocks }
       tsdb: { dir: /data/tsdb }
-      bucket_store: { sync_dir: /data/tsdb-sync }
+      bucket_store:
+        sync_dir: /data/tsdb-sync
+        index_cache:
+          backend: memcached
+          memcached: { addresses: "dns+memcached.bench-prom-ch.svc.cluster.local:11211", max_item_size: 8388608 }
+        chunks_cache:
+          backend: memcached
+          memcached: { addresses: "dns+memcached.bench-prom-ch.svc.cluster.local:11211", max_item_size: 8388608 }
+        metadata_cache:
+          backend: memcached
+          memcached: { addresses: "dns+memcached.bench-prom-ch.svc.cluster.local:11211" }
+    frontend:
+      cache_results: true
+      results_cache:
+        backend: memcached
+        memcached: { addresses: "dns+memcached.bench-prom-ch.svc.cluster.local:11211" }
     memberlist:
       join_members:
         - dns+mimir-gossip.bench-prom-ch.svc.cluster.local:7946
@@ -182,3 +197,34 @@ spec:
       volumes:
         - { name: config, configMap: { name: mimir-config } }
         - { name: data, emptyDir: { sizeLimit: 60Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memcached
+  namespace: bench-prom-ch
+spec:
+  clusterIP: None
+  selector: { app: memcached }
+  ports:
+    - { name: memcached, port: 11211 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memcached
+  namespace: bench-prom-ch
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: memcached } }
+  template:
+    metadata: { labels: { app: memcached } }
+    spec:
+      containers:
+        - name: memcached
+          image: memcached:1.6-alpine
+          args: ["-m", "1024", "-I", "8m"]
+          ports: [{ containerPort: 11211 }]
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1280Mi" }

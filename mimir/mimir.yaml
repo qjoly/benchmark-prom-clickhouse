@@ -27,6 +27,21 @@ blocks_storage:
     dir: /data/tsdb
   bucket_store:
     sync_dir: /data/tsdb-sync
+    index_cache:
+      backend: memcached
+      memcached: { addresses: "memcached:11211", max_item_size: 8388608 }
+    chunks_cache:
+      backend: memcached
+      memcached: { addresses: "memcached:11211", max_item_size: 8388608 }
+    metadata_cache:
+      backend: memcached
+      memcached: { addresses: "memcached:11211" }
+
+frontend:
+  cache_results: true
+  results_cache:
+    backend: memcached
+    memcached: { addresses: "memcached:11211" }
 
 memberlist:
   join_members:

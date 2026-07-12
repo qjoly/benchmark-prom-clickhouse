@@ -140,12 +140,18 @@ path (protobuf, RF fan-out, TSDB head) against columnar batch inserts.
 
 ### Read (mirrored queries, correct metric names, 100,000 hosts)
 
-| Query | Mimir | ClickHouse | Gap |
+Both engines timed the same way: over HTTP, including result serialization and transfer (Mimir
+`query_range`/JSON, ClickHouse HTTP interface with `FORMAT JSONCompact`). p50/p95 in ms over 10
+runs after 2 warm-ups. See `scripts/read_gradient.sh`.
+
+| Query | Mimir (p50/p95) | ClickHouse (p50/p95) | Gap (p50) |
 |---|---|---|---|
-| Single series (1 host, 1 metric, 1h) | 7 ms | 6 ms | tie |
-| 1 metric, all hosts (1h) | 817 ms | 211 ms | CH 3.9x |
-| 1 metric, all hosts (4h) | 2,705 ms | 361 ms | CH 7.5x |
-| 10 metrics, all hosts (1h) | not expressible in one PromQL query | 1,043 ms | CH only |
+| Single series (1 host, 1 metric, 1h) | 4 / 6 ms | 6 / 7 ms | tie |
+| 1 metric, all hosts (1h) | 753 / 817 ms | 245 / 334 ms | CH ~3.1x |
+| 1 metric, all hosts (4h) | 2,524 / 2,610 ms | 451 / 565 ms | CH ~5.6x |
+| 10 metrics, all hosts (1h) | not expressible in one PromQL query | ~1 s | CH only |
+
+(Mimir figures are with its memcached caches enabled, see below.)
 
 The gap widens as the window grows, because Mimir scales with the number of samples it has to
 pull while ClickHouse stays roughly flat. The full ten-metric aggregation cannot be written as a
@@ -154,11 +160,12 @@ collapse into the same label set and the query errors. In SQL it is one `GROUP B
 attempt the wide queries, Mimir needed its per-query fetch limits set to unlimited. Those limits
 exist precisely to stop this kind of analytical query from hurting a Prometheus store.
 
-These read numbers are single-shot (no repetition or percentiles) and the two engines are timed
-differently: ClickHouse server-side (`clickhouse-client --time`, no serialization) versus Mimir
-over full HTTP with JSON serialization. Treat them as order-of-magnitude, not precise ratios. A
-fair read benchmark still needs repeated runs with percentiles and the same transport on both
-sides (see Caveats).
+Mimir runs with its memcached caches enabled (results, chunks, index; added to give it a fair
+shot). Measured, they only shaved a few percent off the wide-scan latency: the bottleneck there
+is query evaluation and JSON serialization of ~6M points, not block I/O from object storage,
+which the caches address. Both engines also query single-node data here (a Distributed ClickHouse
+read on this one physical node was actually slower, see Caveats). The direction holds either way:
+a tie on single-series lookups, ClickHouse ahead on wide aggregations.
 
 ### ClickHouse cluster operations (108 million rows, replicated)
 

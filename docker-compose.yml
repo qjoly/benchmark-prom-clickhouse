@@ -103,6 +103,12 @@ services:
       "
     networks: [bench]
 
+  memcached:
+    image: memcached:1.6-alpine
+    container_name: memcached
+    command: ["-m", "1024", "-I", "8m"]
+    networks: [bench]
+
   mimir-1: &mimir
     image: grafana/mimir:${MIMIR_VERSION:-2.13.0}
     container_name: mimir-1
