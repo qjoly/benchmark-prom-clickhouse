@@ -151,14 +151,19 @@ top of the ingest, so even a replicated ClickHouse finishes the volume in minute
 
 | | ClickHouse | Mimir (RustFS blocks) |
 |---|---|---|
-| On disk, one copy | 2.88 GiB (4.4x compression) | 6.0 GiB |
-| On disk, as replicated | ~5.76 GiB (RF=2) | 6.0 GiB (one compacted copy, S3-durable) |
+| On disk, one copy | 3.04 GiB (4.2x compression) | 6.0 GiB |
+| On disk, as replicated | ~6.08 GiB (RF=2) | 6.0 GiB (one compacted copy, S3-durable) |
 
-The real ClickHouse win here is **compression** (4.4x): one copy is ~2x smaller than Mimir's
+Measured after `OPTIMIZE TABLE ... FINAL` (fully compacted, 1 part). Before the forced merge the
+table sat at ~2.7 to 2.9 GiB across 12 background-merged parts, so compaction did not shrink it;
+if anything it grew slightly (larger blocks compress marginally worse for this data). The earlier
+"2.88 GiB" was not an under-count from unmerged parts.
+
+The real ClickHouse win here is **compression** (~4.2x): one copy is ~2x smaller than Mimir's
 blocks. Total footprint is a different story and depends on the durability model. ClickHouse
-stores RF=2 on cluster disks (~5.76 GiB), while Mimir keeps a single compacted copy in object
-storage and leans on S3 for durability. Counting replication, the two land close together, so
-don't read the 2.88-vs-6.0 gap as a 2x storage saving.
+stores RF=2 on cluster disks (~6.08 GiB), while Mimir keeps a single compacted copy in object
+storage and leans on S3 for durability. Counting replication, the two are essentially equal
+(~6 GiB each), so don't read the 3-vs-6 gap as a 2x storage saving.
 
 ### Resource consumption during the write (from SigNoz)
 
@@ -330,6 +335,17 @@ handicap Mimir. Each was measured. None flips the qualitative result.
   averaged ~1.8 cores/pod, under the old 3-core cap). Mimir's per-sample CPU is still ~43x
   ClickHouse's, so the efficiency gap is architectural. The manifests now ship without the Mimir
   CPU limit (`k8s/20-mimir.yaml`).
+- **Storage measured after compaction settles.** The concern was that the on-disk numbers were
+  grabbed before background merges finished, understating them. Forcing `OPTIMIZE TABLE ... FINAL`
+  on the 108M-row table took 36 s and left it at **3.04 GiB in a single part**, versus ~2.7 to 2.9
+  GiB while it was still 12 background-merged parts. So compaction did not shrink ClickHouse (it
+  grew ~5%); the earlier figure was not an under-count. Updated the storage numbers accordingly.
+- **Continuous ingestion with fresh samples, not a file replay.** The merge-tax test loads batches
+  from a pre-generated file. Re-checked with a freshly generated now-anchored stream (SCALE=2000,
+  `batch=200`): 1,513 parts created from ~1,500 batches, 263 background merges, active parts
+  settling to **7**. Extrapolated to the full-scale run (~360x) that is ~545k parts, matching the
+  540k measured from the file replay. Fresh current-timestamp samples create parts and merge
+  exactly like the replay, so the merge-tax figures are not a replay artifact.
 
 ## Caveats
 
@@ -357,7 +373,11 @@ the ratios:
   real parallelism), so the mono-node ClickHouse reads reported here are its best case on this box,
   not a handicap.
 - **RustFS is one replica on `emptyDir`.** The "durability via S3" framing is nominal here.
-- **Storage was read shortly after ingest**, so Mimir blocks may not be fully compacted.
+- **ClickHouse storage is measured after `OPTIMIZE FINAL`; Mimir's is not.** The ClickHouse
+  number is the fully-compacted single-part size. Mimir's 6.0 GiB was read shortly after ingest,
+  so its compactor might still reduce it; a post-compaction Mimir re-measure was not run (the full
+  dataset is no longer resident after a pod restart). Direction unchanged: at RF=2 the two are
+  already ~equal, and Mimir compaction would only narrow it further.
 - **Ops testing is one-sided:** ClickHouse compaction and replica rebuild are exercised; there is
   no equivalent Mimir test (ingester loss, WAL replay, store-gateway restart).
 - **Raw baseline, no engine-specific optimizations.** Neither side uses its pre-aggregation
