@@ -10,6 +10,9 @@ Local sandbox to compare, under equivalent load, a Prometheus-compatible TSDB
 The benchmark engine is [TSBS](https://github.com/timescale/tsbs) (use-case `cpu-only`),
 which generates **a single dataset** injected into both systems for a fair comparison.
 
+A **multi-node** variant lives in **[`v2/`](v2/README.md)**: the same benchmark on OVH Managed
+Kubernetes with ClickHouse and Mimir on separate machines, provisioned with OpenTofu.
+
 ## Contents
 
 **Findings:** [The experiment](#the-experiment) · [Results](#results) · [Caveats](#caveats) ·
@@ -371,7 +374,10 @@ the ratios:
   node-count independent, so they are the more portable figures. Related, measured: a Distributed
   ClickHouse read on this single node was *slower* than the single-node table (overhead without
   real parallelism), so the mono-node ClickHouse reads reported here are its best case on this box,
-  not a handicap.
+  not a handicap. A multi-node follow-up (**[`v2/`](v2/README.md)**, on OVH Managed Kubernetes with
+  ClickHouse and Mimir on separate machines) confirms this: with the three RF=3 ingesters each on
+  their own node, Mimir's write throughput roughly doubled, so the write gap narrows exactly as
+  expected.
 - **RustFS is one replica on `emptyDir`.** The "durability via S3" framing is nominal here.
 - **ClickHouse storage is measured after `OPTIMIZE FINAL`; Mimir's is not.** The ClickHouse
   number is the fully-compacted single-part size. Mimir's 6.0 GiB was read shortly after ingest,
@@ -422,8 +428,9 @@ qualitative conclusions, but several items would move the ratios.
 
 ### Experimental rigor
 
-- [ ] Run on dedicated, multi-node hardware (not one shared 12 vCPU node). This is the big one: it
-      lets Mimir spread its RF=3 ingesters and lets ClickHouse parallelize distributed reads.
+- [x] Run on dedicated, multi-node hardware (not one shared 12 vCPU node). Done in
+      **[`v2/`](v2/README.md)** on OVH Managed Kubernetes (ClickHouse and Mimir pinned to separate
+      machines): Mimir's RF=3 write throughput roughly doubled with one ingester per node.
 - [ ] N>=3 repetitions per measurement with variance / confidence intervals, not single runs.
 - [ ] Pin equal CPU/memory budgets per cluster and quantify noisy-neighbour interference.
 - [ ] Assert data completeness before comparing (count in Mimir == rows in ClickHouse x metrics),
