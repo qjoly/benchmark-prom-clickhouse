@@ -93,26 +93,28 @@ Measured paths for the same 1.08 billion points:
 | Path | Duration | Throughput | Replication |
 |---|---|---|---|
 | ClickHouse, client ingest (TSBS) | 273 s | 3.95 M points/s | single node, RF=1 |
-| ClickHouse, cluster write (INSERT SELECT into Distributed) | +48 s | ~22 M points/s (server-side) | 2 shards, RF=2 |
+| ClickHouse, cluster write RF=2 (INSERT SELECT into Distributed) | +48 s | ~22 M points/s (server-side) | 2 shards, RF=2 |
+| ClickHouse, cluster write RF=3 (INSERT SELECT, replicate) | +82 s | server-side | 1 shard, RF=3 |
 | Mimir, backfill (out-of-order), 3-node cluster | 5,270 s | 205 k points/s | 3 nodes, RF=3 |
-| Mimir, second cluster run | 5,292 s | 204 k points/s | 3 nodes, RF=3 |
+| Mimir, real-time in-order (now-anchored, 72M points) | 355 s | 203 k points/s | 3 nodes, RF=3 |
 | Mimir, single instance (monolithic) | 3,645 s | 296 k points/s | 1 instance, RF=1 |
 
-The second Mimir run was meant to be real-time (append at head) via `tsbs_load_prometheus
---use-current-time`, but that flag is a no-op in this TSBS build: the data kept its original
-timestamps, so it was effectively a second backfill. A genuine real-time write was therefore not
-measured. Treat 205 k/s as Mimir's ingest ceiling for this dataset regardless of timestamp mode.
+**Equal replication (RF=3).** Replicating ClickHouse to RF=3 (108M rows to three replicas,
+324M row-copies) took 82 s of server-side work on top of the client ingest, so a fully RF=3
+ClickHouse lands the dataset in roughly 355 s and about 590 core-seconds. Even at the same RF=3
+as Mimir, that is ~15x faster and ~49x cheaper in CPU than Mimir's cluster run. The RF asymmetry
+is not what drives the gap.
 
 Read the ClickHouse and Mimir rows with the asymmetry in mind (see Caveats): the ClickHouse
-client path is single node at RF=1, and its cluster write is a server-side INSERT SELECT with no
-client protocol, while Mimir ingests over remote-write at RF=3. So a bare "19x" is not a
-like-for-like number. Two findings still hold:
+client path is single node, and its cluster writes are server-side INSERT SELECT with no client
+protocol, while Mimir ingests over remote-write. Two findings hold:
 
-- **The ~205 k/s ceiling is remote-write plus RF=3 bound, not memory or timestamp mode.** Both
-  cluster runs landed within 0.5% of each other. Out-of-order backfill only cost memory: the first
-  run ballooned the ingester working set and was evicted at 20 GiB, which is why the working
-  directory is now 60 GiB. We could not cleanly isolate a true real-time (in-order) write because
-  `--use-current-time` did not shift timestamps.
+- **The ~205 k/s ceiling is remote-write plus RF=3 bound, not out-of-order or timestamp mode.** A
+  genuine real-time, in-order write (a now-anchored dataset, ingested to the RF=3 cluster) ran at
+  203 k/s, within 1% of the out-of-order backfill's 205 k/s. Out-of-order only cost memory: the
+  first run ballooned the ingester working set and was evicted at 20 GiB (fixed by the 60 GiB
+  working directory). The single-instance run (RF=1) hit 296 k/s, so RF=3 is ~1.5x of the ceiling
+  and the rest is the per-sample remote-write path.
 - **More client concurrency does not raise the ceiling.** A sweep at 8, 16, 32 and 48 workers
   stayed flat around 180-188 k samples/s while Mimir's own CPU climbed from ~3.2 to ~5.1 cores.
   Extra concurrency buys CPU burn, not throughput. The wall is server side: ingester CPU plus the
@@ -266,10 +268,10 @@ the ratios:
 - **Write figures are one-shot bulk (large batches).** Continuous small-write ingestion shifts
   cost into ClickHouse background merges (see "the merge tax" above); a steady-state multi-day run
   was not modeled.
-- **No genuine real-time Mimir write.** `tsbs_load_prometheus --use-current-time` is a no-op in
-  this build (it does not shift timestamps), so the "real-time" run was another backfill. A true
-  in-order-at-head write, which might be cheaper than out-of-order, was not measured. Ingest
-  throughput was ~identical regardless, so the 205 k/s ceiling still stands.
+- **`--use-current-time` is a no-op** in this TSBS build (it does not shift timestamps). The
+  genuine real-time write was therefore done with a now-anchored generated dataset instead; it ran
+  at 203 k/s, matching the backfill, so the 205 k/s ceiling is confirmed protocol/RF-bound rather
+  than an out-of-order artifact.
 
 ## Verdict
 
@@ -302,12 +304,12 @@ conclusions, but several would move the ratios.
 
 ### Write
 
-- [ ] Ingest ClickHouse at equal replication (RF=3) for a strict like-for-like, or normalize
-      throughput per written copy.
+- [x] Ingest ClickHouse at equal replication (RF=3): 108M rows to 3 replicas took +82 s /
+      ~590 core-seconds total, still ~15x faster and ~49x cheaper than Mimir RF=3.
 - [ ] Drive a clustered ClickHouse client ingest (into a Distributed table), which stock TSBS
       cannot do; needs a patched loader or a different generator.
-- [ ] Measure a genuine real-time, in-order-at-head write (generate a now-anchored dataset, since
-      `--use-current-time` is a no-op here) and compare to the out-of-order backfill.
+- [x] Measure a genuine real-time, in-order-at-head write (now-anchored dataset, since
+      `--use-current-time` is a no-op): 203 k/s, matching the out-of-order backfill.
 - [ ] Steady-state continuous ingestion over hours/days: watch ClickHouse background merges and
       Mimir compaction under sustained load, not just a one-shot bulk (see the merge tax).
 - [ ] Tune ClickHouse for a metrics pattern (`async_insert`, batch sizing) and re-measure.
