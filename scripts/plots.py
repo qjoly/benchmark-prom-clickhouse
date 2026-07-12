@@ -95,6 +95,24 @@ lines = ax.get_lines() + ax2.get_lines()
 ax.legend(lines, [l.get_label() for l in lines], loc="center right")
 save(fig, "concurrency_sweep.png")
 
+# 6) Read under concurrency: QPS (solid) and p95 (dashed) vs concurrency.
+fig, ax = plt.subplots(figsize=(7, 4))
+conc = [1, 4, 16, 64]
+mi_qps = [82, 268, 377, 390]; ch_qps = [72, 244, 325, 316]
+mi_p95 = [5, 9, 32, 120]; ch_p95 = [7, 11, 52, 245]
+ax.plot(conc, mi_qps, "o-", color=MI, label="Mimir QPS")
+ax.plot(conc, ch_qps, "o-", color=CH, label="ClickHouse QPS")
+ax.set_xscale("log", base=2); ax.set_xticks(conc); ax.set_xticklabels(conc)
+ax.set_xlabel("concurrent clients"); ax.set_ylabel("QPS")
+ax.set_title("Read under concurrency (single-series point query)")
+ax2 = ax.twinx()
+ax2.plot(conc, mi_p95, "s--", color=MI, alpha=0.5, label="Mimir p95")
+ax2.plot(conc, ch_p95, "s--", color=CH, alpha=0.5, label="ClickHouse p95")
+ax2.set_ylabel("p95 latency (ms, dashed)")
+l1 = ax.get_lines() + ax2.get_lines()
+ax.legend(l1, [l.get_label() for l in l1], loc="upper left", fontsize=8)
+save(fig, "read_concurrency.png")
+
 # 5) Storage footprint (GiB).
 fig, ax = plt.subplots(figsize=(5.5, 4))
 bars(ax, ["ClickHouse\n(1 copy, 4.4x)", "Mimir\n(RustFS blocks)"], [2.88, 6.0], [CH, MI],
