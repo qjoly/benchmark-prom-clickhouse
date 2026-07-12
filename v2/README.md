@@ -131,6 +131,34 @@ Takeaways:
   still wins wide aggregations (by even more here). Multi-node moved the write and quorum numbers,
   not the direction of the read results.
 
+## Deep-dive at scale (108M rows / 1.08 B points loaded into ClickHouse)
+
+Five follow-up measurements on the multi-node cluster:
+
+- **Full-scale ClickHouse write:** 108M rows loaded at **5.62 M points/s** on one b3-16 node (vs
+  3.95 M on V1's 12 vCPU box; larger batches and the Cinder high-speed disk help).
+- **Distributed reads win at scale.** On the full 108M, a `Distributed` query over the 2 shards on
+  separate machines beat the single-node table: heavy 10-metric aggregation **1.46 s vs 1.90 s**
+  (~1.3x), one-metric fan-out **0.22 s vs 0.33 s** (~1.5x). This is the opposite of V1, where the
+  distributed read was slower on one physical node. At 15M it was still slower (coordination
+  overhead dominates a tiny scan); the benefit needs scale.
+- **Mimir write scales with client concurrency on multi-node.** With **disjoint** now-anchored
+  slices (avoiding the duplicate-append head short-circuit a reviewer flagged): 4 workers 360k/s,
+  8 workers 415k/s, 16 workers **424k samples/s**. V1's single-node sweep stayed flat at
+  ~180-188k regardless of workers, so multi-node raises both the ceiling and the scaling.
+- **Read concurrency gap narrows.** Single-series point query at C=64: Mimir **547 QPS / 57 ms
+  p95** vs ClickHouse **539 QPS / 69 ms** (V1 was 390/120 vs 316/245). Both scale well now, Mimir
+  marginally ahead.
+- **ClickHouse storage on Cinder (108M):** 3.04 GiB one copy (4.17x), **6.51 GiB at cluster RF=2**,
+  matching V1's numbers on real block volumes.
+
+Still pending, they need the long backfill:
+- Full-scale **Mimir** write throughput at 1.08 B (a ~40 min out-of-order backfill).
+- **Mimir object-storage footprint** and the reviewer's RF=3-dedup question: the `mimir-blocks`
+  bucket is currently near-empty because recent data still sits in the ingester head (local PVC),
+  not yet shipped as blocks. It can only be measured after blocks ship (block-range close, ~2h)
+  and the compactor runs.
+
 ## 4. Tear down
 
 ```bash
