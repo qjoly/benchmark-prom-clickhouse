@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (gitignored) or export TF_VAR_* from your openrc.sh.
+# service_name is the OVH project ID (= OS_PROJECT_ID). Do NOT commit the real value.
+
+# service_name = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# region       = "GRA9"
+# node_flavor  = "b3-8"
+# ch_nodes     = 3
+# mimir_nodes  = 3
+# k8s_version  = "1.31"
