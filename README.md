@@ -163,7 +163,7 @@ ingestion. It is still faster than Mimir here (about 900k vs 205k points/s even 
 the gap narrows and the background merge CPU is real. A real metrics deployment would tune
 `batch-size` and `async_insert`.
 
-### Read (mirrored queries, correct metric names, 100,000 hosts)
+### Read (mirrored queries, correct metric names, 10,000 hosts / 100k series)
 
 Both engines timed the same way: over HTTP, including result serialization and transfer (Mimir
 `query_range`/JSON, ClickHouse HTTP interface with `FORMAT JSONCompact`). p50/p95 in ms over 10
@@ -191,6 +191,24 @@ is query evaluation and JSON serialization of ~6M points, not block I/O from obj
 which the caches address. Both engines also query single-node data here (a Distributed ClickHouse
 read on this one physical node was actually slower, see Caveats). The direction holds either way:
 a tie on single-series lookups, ClickHouse ahead on wide aggregations.
+
+### Leveraging engine optimizations (ClickHouse rollup)
+
+The comparison above uses raw tables on both sides. Each engine has a pre-aggregation tool that
+the raw baseline skips. A ClickHouse materialized-view-style rollup (1-minute `AggregatingMergeTree`,
+`scripts/ch_rollup.sh`) on an "avg per host" query:
+
+| Query | raw `cpu` | rollup `cpu_1m` |
+|---|---|---|
+| 4h window (scan ~14M vs ~2.4M) | 165 ms | 220 ms |
+| full 30h range (scan 108M vs 18M) | 337 ms | 230 ms |
+
+The rollup helps on large scans (~1.5x on the full range) but not on small windows, where
+ClickHouse's raw columnar scan is already fast enough that the aggregate-state overhead makes it
+slower. Mimir's counterpart is recording rules (the ruler); those only pre-compute going forward,
+so they cannot be backfilled onto this historical dataset for a like-for-like and were not
+measured. The point stands either way: both engines have headroom via pre-aggregation, so the raw
+numbers are a floor, not a ceiling.
 
 ### ClickHouse cluster operations (108 million rows, replicated)
 
