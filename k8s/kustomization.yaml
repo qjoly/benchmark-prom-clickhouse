@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Base = the V1 single-node manifests. V2 overlays live in v2/gitops/benchmark-stack
+# and patch these for multi-node (nodeSelector per pool, PVCs). Applying this base
+# directly reproduces the V1 emptyDir layout.
+resources:
+  - 00-namespace.yaml
+  - 10-clickhouse.yaml
+  - 20-mimir.yaml
+  - 30-tsbs.yaml

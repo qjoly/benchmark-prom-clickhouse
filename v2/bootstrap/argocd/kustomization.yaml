@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+
+resources:
+  - namespace.yaml
+  - https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.2/manifests/install.yaml
+
+# The benchmark-stack overlay references ../../../k8s (repo-relative), so ArgoCD's
+# kustomize build must allow paths outside the app dir.
+patches:
+  - target: { kind: ConfigMap, name: argocd-cm }
+    patch: |
+      - op: add
+        path: /data
+        value:
+          kustomize.buildOptions: --load-restrictor LoadRestrictionsNone

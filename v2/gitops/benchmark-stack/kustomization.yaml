@@ -1,0 +1,61 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# V2 multi-node overlay of the V1 manifests. Pins ClickHouse (+ Keeper + the tsbs
+# driver) to the ch pool and Mimir (+ RustFS + memcached) to the mimir pool, so the
+# two engines never share a machine. PVC conversion (Cinder StorageClass) is layered
+# on once the cluster is validated.
+resources:
+  - ../../../k8s
+
+patches:
+  # ---- ClickHouse pool (bench-pool=ch) ----
+  - target: { kind: StatefulSet, name: chnode }
+    patch: |
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: { bench-pool: ch }
+  - target: { kind: StatefulSet, name: chkeeper }
+    patch: |
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: { bench-pool: ch }
+  - target: { kind: Deployment, name: tsbs }
+    patch: |
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: { bench-pool: ch }
+
+  # ---- Mimir pool (bench-pool=mimir) ----
+  - target: { kind: StatefulSet, name: mimir }
+    patch: |
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: { bench-pool: mimir }
+  - target: { kind: Deployment, name: rustfs }
+    patch: |
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: { bench-pool: mimir }
+  - target: { kind: Deployment, name: memcached }
+    patch: |
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: { bench-pool: mimir }
+  - target: { kind: Job, name: rustfs-init }
+    patch: |
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: { bench-pool: mimir }
+
+  # Spread the 3 Mimir ingesters one per node.
+  - target: { kind: StatefulSet, name: mimir }
+    patch: |
+      - op: add
+        path: /spec/template/spec/affinity
+        value:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels: { app: mimir }
+                topologyKey: kubernetes.io/hostname
