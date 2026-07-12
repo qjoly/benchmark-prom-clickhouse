@@ -205,10 +205,18 @@ the raw baseline skips. A ClickHouse materialized-view-style rollup (1-minute `A
 
 The rollup helps on large scans (~1.5x on the full range) but not on small windows, where
 ClickHouse's raw columnar scan is already fast enough that the aggregate-state overhead makes it
-slower. Mimir's counterpart is recording rules (the ruler); those only pre-compute going forward,
-so they cannot be backfilled onto this historical dataset for a like-for-like and were not
-measured. The point stands either way: both engines have headroom via pre-aggregation, so the raw
-numbers are a floor, not a ceiling.
+slower.
+
+Mimir's counterpart is recording rules (`scripts/mimir_rule.sh`): a rule that pre-computes
+`avg_over_time(usage_user[1m])` every minute, the same temporal downsampling as the ClickHouse
+rollup. The rule loads and evaluates cleanly (health "ok"), but recording rules only pre-compute
+going forward, and on this single-node deployment the freshly-fed current-time data was not
+reliably queryable back (the recent-data vs blocks gap in the caveats), so the recorded-read
+comparison could not be completed. Mechanically it is the right analog; a steady-state multi-hour
+deployment would let it pay off like the rollup does.
+
+The point stands either way: both engines have headroom via pre-aggregation, so the raw numbers
+are a floor, not a ceiling.
 
 ### ClickHouse cluster operations (108 million rows, replicated)
 
