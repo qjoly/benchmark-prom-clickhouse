@@ -28,9 +28,9 @@ variable "k8s_version" {
 }
 
 variable "node_flavor" {
-  description = "Flavor for both worker pools (balanced tier: b3-8 = 8 vCPU / 32 GB)."
+  description = "Flavor for both worker pools (balanced tier: b3-16 = 4 vCPU / 16 GB; OVH names b3 flavors by RAM in GB)."
   type        = string
-  default     = "b3-8"
+  default     = "b3-16"
 }
 
 variable "ch_nodes" {

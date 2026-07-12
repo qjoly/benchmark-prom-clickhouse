@@ -1,167 +1,135 @@
 # V2: multi-node benchmark on OVH MKS
 
-V1 ran everything on one shared node. Its own caveats say the throughput ratios are the numbers
-most likely to move on real multi-node hardware, because Mimir spreads its RF=3 ingesters across
-machines while V1 stacked them on one box. V2 is a real multi-node cluster on OVH Managed
-Kubernetes so ClickHouse shards/replicas and Mimir ingesters each sit on their own machine over a
-real network.
+V1 ran everything on one shared 12 vCPU node. Its caveats predicted the throughput ratios would
+narrow on real multi-node hardware, because Mimir spreads its RF=3 ingesters across machines while
+V1 stacked them on one box. V2 confirms that prediction on a real multi-node cluster: OVH Managed
+Kubernetes, ClickHouse and Mimir on separate machines, over a real network.
 
-No GitOps and no autoscaling: infrastructure is OpenTofu, the workloads are applied by hand with
-`kubectl`, documented below.
+No GitOps and no autoscaling: infrastructure is OpenTofu, workloads are applied by hand with
+`kubectl`. This is the procedure as it actually ran, gotchas included.
 
-## Architecture
+## Architecture (as built)
 
-- OVH Managed Kubernetes (MKS), region GRA9, hourly billed. Control plane, Cilium CNI, and a
-  Cinder-backed StorageClass (`csi-cinder-high-speed-gen2`, default) are all provided by OVH, so
-  there is nothing to bootstrap for control plane, networking, or storage.
-- Two worker pools, `anti_affinity = true` (distinct hypervisors), each labelled so workloads pin
-  to their own machines:
+- OVH Managed Kubernetes (MKS), region GRA9, k8s 1.35, hourly billed. Control plane, Cilium CNI,
+  and a Cinder StorageClass (`csi-cinder-high-speed-gen2`, default) are provided by OVH, so there
+  is nothing to bootstrap for control plane, networking, or storage.
+- Two worker pools, `anti_affinity = true` (distinct hypervisors), labelled so workloads pin to
+  their own machines:
 
   | Pool | Node label | Runs | Flavor | Nodes |
   |---|---|---|---|---|
-  | ch | `bench-pool=ch` | ClickHouse (2 shards x 2 replicas) + Keeper + tsbs driver | b3-8 | 3 |
-  | mimir | `bench-pool=mimir` | Mimir ingesters (RF=3) + gateway + memcached + RustFS | b3-8 | 3 |
+  | ch | `bench-pool=ch` | ClickHouse (2 shards x 2 replicas) + Keeper + tsbs | b3-16 (4 vCPU / 16 GB) | 3 |
+  | mimir | `bench-pool=mimir` | Mimir ingesters (RF=3) + RustFS + memcached | b3-16 (4 vCPU / 16 GB) | 3 |
 
-Cost: 6x b3-8 is roughly EUR 0.66/h (managed control plane is free). Spin up, run, destroy.
+  OVH flavor naming: `b3-N` is N GB of RAM, not N vCPU. `b3-16` is 4 vCPU / 16 GB. (We started on
+  `b3-8` = 2 vCPU, found it too small, and resized to `b3-16`.)
+- Persistence: every stateful component uses a Cinder PVC (ClickHouse 40Gi each, Keeper 5Gi,
+  Mimir 60Gi each, RustFS 30Gi), so data survives pod restarts and storage numbers are real.
+- Cost: 6x b3-16 is roughly EUR 0.73/h (managed control plane is free).
 
 ## Prerequisites
 
-- OpenTofu (or Terraform), `kubectl`.
-- OVH OpenStack credentials in `openrc.sh` (provides `OS_PROJECT_ID`) and OVH API credentials in
-  `~/.ovh.conf` (section `[ovh-eu]`). The `ovh` provider reads `~/.ovh.conf` automatically.
-- Never commit `openrc.sh`, `~/.ovh.conf`, `terraform.tfvars`, `*.kubeconfig`, or `.objstore.env`.
+- OpenTofu, `kubectl`.
+- OVH OpenStack credentials in an `openrc.sh` (gives `OS_PROJECT_ID`) and OVH API credentials in
+  `~/.ovh.conf` (section `[ovh-eu]`; the `ovh` provider reads it automatically).
+- Never commit `openrc.sh`, `~/.ovh.conf`, `terraform.tfvars`, `*.kubeconfig`, `.objstore.env`.
 
-## 1. Provision the cluster (OpenTofu)
+## 1. Provision the cluster
 
 ```bash
 cd v2/infra
-source ~/path/to/openrc.sh                 # sets OS_PROJECT_ID and friends
-export TF_VAR_service_name="$OS_PROJECT_ID" # keeps the project id out of the repo
-
+source ~/path/to/openrc.sh
+export TF_VAR_service_name="$OS_PROJECT_ID"   # keeps the project id out of the repo
 tofu init
-tofu plan      # 1 cluster + 2 nodepools + local kubeconfig file
-tofu apply
-```
-
-Knobs live in `variables.tf` (region, `node_flavor`, `ch_nodes`, `mimir_nodes`, `k8s_version`).
-Copy `terraform.tfvars.example` to `terraform.tfvars` to override, or pass `-var`.
-
-The kubeconfig is written to `v2/infra/.kubeconfigs/bench.kubeconfig` (gitignored).
-
-```bash
+tofu apply                                     # cluster + 2 nodepools + local kubeconfig
 export KUBECONFIG="$PWD/.kubeconfigs/bench.kubeconfig"
-kubectl get nodes -L bench-pool     # 6 Ready nodes, labelled ch / mimir
+kubectl get nodes -L bench-pool               # 6 Ready nodes, labelled ch / mimir
 ```
 
-### If apply is interrupted (state lock / orphaned resources)
+Knobs are in `variables.tf` (`region`, `node_flavor`, `ch_nodes`, `mimir_nodes`, `k8s_version`).
 
-Running `tofu apply` in the background and losing the process can leave OVH resources created but
-absent from the local state (empty `terraform.tfstate`), plus a stale lock file. Recover without
-creating duplicates:
+**Gotcha: run apply in the foreground.** MKS cluster + nodepools take several minutes. If the
+apply process is killed before it writes state (a background job dropped on session teardown, or a
+2 minute command timeout), OVH keeps the created resources but they are absent from the local
+state (empty `terraform.tfstate`), and a rerun tries to create duplicates. Recover by importing
+the orphans instead of recreating:
 
 ```bash
-rm -f .terraform.tfstate.lock.info          # stale lock from the dead process
-# find the orphaned ids on OVH (cluster + nodepools), then import them:
+rm -f .terraform.tfstate.lock.info
+# ids from the OVH API: GET /cloud/project/{id}/kube and .../kube/{kube_id}/nodepool
 tofu import ovh_cloud_project_kube.bench          "$OS_PROJECT_ID/<kube_id>"
 tofu import ovh_cloud_project_kube_nodepool.ch    "$OS_PROJECT_ID/<kube_id>/<ch_pool_id>"
 tofu import ovh_cloud_project_kube_nodepool.mimir "$OS_PROJECT_ID/<kube_id>/<mimir_pool_id>"
-tofu plan                                    # should report: No changes
+tofu plan   # expect: No changes
 ```
 
-List the ids with the OVH API: `GET /cloud/project/{id}/kube` and
-`GET /cloud/project/{id}/kube/{kube_id}/nodepool`. Prefer running `tofu apply` in the foreground so
-the state is always written.
+Changing `node_flavor` forces a nodepool replacement (destroy + recreate). The Cinder PVCs survive
+and reattach to the new nodes.
 
-## 2. Deploy the benchmark stack by hand
+## 2. Deploy the benchmark stack
 
-The V1 manifests in `../k8s` assume a single node with `emptyDir`. For V2, apply them with two
-changes: pin each workload to its pool and give the stateful ones real Cinder volumes.
+The manifests in `v2/k8s/` are the V1 stack adapted for multi-node: a `nodeSelector` per pool,
+`emptyDir` swapped for Cinder `volumeClaimTemplates`, pod anti-affinity, and no CPU limit on Mimir.
 
 ```bash
 kubectl apply -f ../k8s/00-namespace.yaml
-```
-
-Create the object-store secret (used by RustFS and Mimir). Keep the value in a local
-`.objstore.env` (gitignored), do not inline it in a committed file:
-
-```bash
 kubectl -n bench-prom-ch create secret generic objstore-creds \
   --from-literal=access-key=benchuser \
   --from-literal=secret-key="$(openssl rand -hex 24)"
+kubectl apply -f 10-clickhouse.yaml
+kubectl apply -f 20-mimir.yaml
+kubectl apply -f 30-tsbs.yaml
 ```
 
-### Pin workloads to their pool (nodeSelector)
-
-Add a `nodeSelector` to each pod template before applying:
-
-| Manifest / workload | `nodeSelector` |
-|---|---|
-| `10-clickhouse.yaml` StatefulSet `chnode`, StatefulSet `chkeeper` | `bench-pool: ch` |
-| `30-tsbs.yaml` Deployment `tsbs` | `bench-pool: ch` |
-| `20-mimir.yaml` StatefulSet `mimir`, Deployments `rustfs` / `memcached`, Job `rustfs-init` | `bench-pool: mimir` |
-
-Example (add under `spec.template.spec`):
-
-```yaml
-      nodeSelector:
-        bench-pool: ch
-```
-
-ClickHouse's 4 chnode replicas spread over the 3 ch nodes (one node runs two); Keeper and tsbs are
-light. Mimir's 3 ingesters land one per mimir node thanks to the pool split.
-
-### Swap emptyDir for Cinder PVCs (persistence + real storage numbers)
-
-For the StatefulSets, replace the `data` `emptyDir` volume with a `volumeClaimTemplate`. Remove the
-`- { name: data, emptyDir: {...} }` line from `spec.template.spec.volumes` and add:
-
-```yaml
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        storageClassName: csi-cinder-high-speed-gen2
-        resources:
-          requests:
-            storage: 40Gi     # chnode; chkeeper 5Gi; mimir 60Gi
-```
-
-For the RustFS Deployment (single replica), replace its `emptyDir` with a PVC:
-
-```yaml
-# a PersistentVolumeClaim named rustfs-data (RWO, csi-cinder-high-speed-gen2, 30Gi),
-# then in the pod: volumes: [{ name: data, persistentVolumeClaim: { claimName: rustfs-data } }]
-```
-
-tsbs can keep its `emptyDir` (scratch space for generated data).
-
-Then apply and watch the pods spread across pools:
+**Gotcha: pod anti-affinity is required, not optional.** Without it the scheduler put all three
+Mimir ingesters on a single mimir node, which is exactly the single-box situation V2 exists to
+avoid. `20-mimir.yaml` sets a required anti-affinity (`app=mimir`, `topologyKey=hostname`) so the
+3 ingesters land one per node; `10-clickhouse.yaml` uses a preferred one to spread the 4 chnodes
+over 3 nodes. Verify:
 
 ```bash
-kubectl apply -f ../k8s/10-clickhouse.yaml
-kubectl apply -f ../k8s/20-mimir.yaml
-kubectl apply -f ../k8s/30-tsbs.yaml
-kubectl -n bench-prom-ch get pods -o wide      # confirm ch-* on ch nodes, mimir on mimir nodes
+kubectl -n bench-prom-ch get pods -o wide   # 1 mimir per mimir-node; ch spread over ch-nodes
 ```
 
 ## 3. Run the benchmark
 
-The existing scripts already switch `docker exec` to `kubectl exec` with `RUNTIME=k8s`:
+The scripts switch `docker exec` to `kubectl exec` with `RUNTIME=k8s`:
 
 ```bash
 cd ..
 export KUBECONFIG=v2/infra/.kubeconfigs/bench.kubeconfig
-make k8s-smoke        # quick validation
-make k8s-bench        # full run
+make k8s-smoke
+make k8s-bench
 ```
 
-What to re-check on multi-node (this is the point of V2):
-- Mimir RF=3 write throughput and CPU with ingesters on separate machines (V1 predicted the
-  throughput ratio narrows here).
-- ClickHouse quorum write across a real network (V1 measured 0 cost because replicas were
-  co-located) and distributed reads that can actually parallelize.
-- Storage on real block volumes, post-compaction on both sides.
+Or drive it by hand, as this run did (generate a now-anchored dataset in the `tsbs` pod, load into
+Mimir over remote-write and into ClickHouse with `tsbs_load_clickhouse`, measure per-pod CPU via
+each pod's `process_cpu_seconds_total`).
+
+## Results (15M-point now-anchored slice, SCALE=10000 / 100k series)
+
+Not the full 1.08 B run: a 15M-point slice on the 4 vCPU nodes, enough to show the multi-node
+effect. Compare to the same slice on V1's single node.
+
+| Metric | V1 (single node) | V2 (multi-node) | Effect |
+|---|---|---|---|
+| Mimir write (RF=3) | 205-212 k samples/s | **427 k samples/s** | ~2x: ingesters on 3 nodes |
+| Mimir write CPU | ~24 µcore-s/sample | ~16 µcore-s/sample | less contention |
+| ClickHouse client write | 3.95 M pts/s (full run) | 5.22 M pts/s (15M burst) | fast either way |
+| ClickHouse quorum write (RF=3) | +0 s (replicas co-located) | +1 s / ~2x vs async | quorum costs over a real network |
+| Read single series (p50) | Mimir ~4 / CH ~6 ms | Mimir 5.8 / CH 13.5 ms | Mimir wins point queries |
+| Read 1 metric / all hosts (p50) | CH ~3-5x faster | CH 61 vs Mimir 534 ms (~8.7x) | ClickHouse wins fan-out |
+
+Takeaways:
+- **The write throughput gap narrows on multi-node, as V1 predicted.** Mimir roughly doubled
+  (205k to 427k samples/s) once its three RF=3 ingesters each had their own machine. V1's single
+  node was the bottleneck, not the remote-write protocol alone.
+- **Quorum replication is not free on a real network.** V1 measured 0 cost because the replicas
+  were co-located on one node; with replicas on distinct machines, `insert_quorum=2` roughly
+  doubled the (small) insert wall time. The reviewer was right that this matters off a single box.
+- **The qualitative verdict holds.** Mimir still wins high-concurrency point queries, ClickHouse
+  still wins wide aggregations (by even more here). Multi-node moved the write and quorum numbers,
+  not the direction of the read results.
 
 ## 4. Tear down
 
@@ -170,5 +138,5 @@ cd v2/infra
 tofu destroy
 ```
 
-Check afterwards that no Cinder volumes are left behind (PVCs with `Delete` reclaim policy are
-removed with their pods, but verify in the OVH console or via `openstack volume list`).
+Then confirm no Cinder volumes are left behind (PVCs use `Delete` reclaim, but verify in the OVH
+console or `openstack volume list`).

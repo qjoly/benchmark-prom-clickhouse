@@ -1,0 +1,199 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  namespace: bench-prom-ch
+data:
+  cluster.xml: |
+    <clickhouse>
+        <listen_host>0.0.0.0</listen_host>
+        <zookeeper>
+            <node><host>chkeeper</host><port>9181</port></node>
+        </zookeeper>
+        <remote_servers>
+            <bench_cluster>
+                <shard>
+                    <internal_replication>true</internal_replication>
+                    <replica><host>chnode-0.chnode</host><port>9000</port></replica>
+                    <replica><host>chnode-1.chnode</host><port>9000</port></replica>
+                </shard>
+                <shard>
+                    <internal_replication>true</internal_replication>
+                    <replica><host>chnode-2.chnode</host><port>9000</port></replica>
+                    <replica><host>chnode-3.chnode</host><port>9000</port></replica>
+                </shard>
+            </bench_cluster>
+        </remote_servers>
+    </clickhouse>
+  benchmark-users.xml: |
+    <clickhouse>
+        <profiles>
+            <default>
+                <max_partitions_per_insert_block>0</max_partitions_per_insert_block>
+                <max_insert_threads>4</max_insert_threads>
+                <max_memory_usage>0</max_memory_usage>
+                <background_pool_size>16</background_pool_size>
+                <allow_deprecated_syntax_for_merge_tree>1</allow_deprecated_syntax_for_merge_tree>
+            </default>
+        </profiles>
+        <users>
+            <default>
+                <password></password>
+                <networks><ip>::/0</ip></networks>
+                <profile>default</profile>
+                <quota>default</quota>
+                <access_management>1</access_management>
+            </default>
+        </users>
+    </clickhouse>
+  keeper_config.xml: |
+    <clickhouse>
+        <logger><level>warning</level><console>true</console></logger>
+        <listen_host>0.0.0.0</listen_host>
+        <keeper_server>
+            <tcp_port>9181</tcp_port>
+            <server_id>1</server_id>
+            <log_storage_path>/var/lib/clickhouse-keeper/log</log_storage_path>
+            <snapshot_storage_path>/var/lib/clickhouse-keeper/snapshots</snapshot_storage_path>
+            <coordination_settings>
+                <operation_timeout_ms>10000</operation_timeout_ms>
+                <session_timeout_ms>30000</session_timeout_ms>
+                <raft_logs_level>warning</raft_logs_level>
+            </coordination_settings>
+            <raft_configuration>
+                <server><id>1</id><hostname>chkeeper-0.chkeeper</hostname><port>9234</port></server>
+            </raft_configuration>
+        </keeper_server>
+    </clickhouse>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chkeeper
+  namespace: bench-prom-ch
+spec:
+  clusterIP: None
+  selector: { app: chkeeper }
+  ports:
+    - { name: client, port: 9181 }
+    - { name: raft, port: 9234 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: chkeeper
+  namespace: bench-prom-ch
+spec:
+  serviceName: chkeeper
+  replicas: 1
+  selector: { matchLabels: { app: chkeeper } }
+  template:
+    metadata: { labels: { app: chkeeper } }
+    spec:
+      nodeSelector: { bench-pool: ch }
+      securityContext: { fsGroup: 101 }
+      containers:
+        - name: keeper
+          image: clickhouse/clickhouse-keeper:24.8
+          ports: [{ containerPort: 9181 }, { containerPort: 9234 }]
+          volumeMounts:
+            - { name: config, mountPath: /etc/clickhouse-keeper/keeper_config.xml, subPath: keeper_config.xml }
+            - { name: data, mountPath: /var/lib/clickhouse-keeper }
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+      volumes:
+        - name: config
+          configMap: { name: clickhouse-config }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: csi-cinder-high-speed-gen2
+        resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chnode
+  namespace: bench-prom-ch
+spec:
+  clusterIP: None
+  selector: { app: chnode }
+  ports:
+    - { name: native, port: 9000 }
+    - { name: http, port: 8123 }
+    - { name: interserver, port: 9009 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: chnode
+  namespace: bench-prom-ch
+spec:
+  serviceName: chnode
+  replicas: 4
+  podManagementPolicy: Parallel
+  selector: { matchLabels: { app: chnode } }
+  template:
+    metadata: { labels: { app: chnode } }
+    spec:
+      nodeSelector: { bench-pool: ch }
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector: { matchLabels: { app: chnode } }
+                topologyKey: kubernetes.io/hostname
+      securityContext: { fsGroup: 101 }
+      initContainers:
+        - name: init-config
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              ORD=${HOSTNAME##*-}
+              SHARD=$(( ORD / 2 + 1 ))
+              cp /cm/cluster.xml /conf/cluster.xml
+              cp /cm/benchmark-users.xml /users/benchmark.xml
+              cat > /conf/macros.xml <<EOF
+              <clickhouse>
+                <macros>
+                  <cluster>bench_cluster</cluster>
+                  <shard>0${SHARD}</shard>
+                  <replica>${HOSTNAME}</replica>
+                </macros>
+                <interserver_http_host>${HOSTNAME}.chnode</interserver_http_host>
+              </clickhouse>
+              EOF
+          volumeMounts:
+            - { name: cm, mountPath: /cm }
+            - { name: conf, mountPath: /conf }
+            - { name: users, mountPath: /users }
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24.8
+          ports: [{ containerPort: 9000 }, { containerPort: 8123 }, { containerPort: 9009 }]
+          volumeMounts:
+            - { name: conf, mountPath: /etc/clickhouse-server/config.d }
+            - { name: users, mountPath: /etc/clickhouse-server/users.d }
+            - { name: data, mountPath: /var/lib/clickhouse }
+          resources:
+            requests: { cpu: "1", memory: "3Gi" }
+            limits: { cpu: "3", memory: "12Gi" }
+          readinessProbe:
+            httpGet: { path: /ping, port: 8123 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - { name: cm, configMap: { name: clickhouse-config } }
+        - { name: conf, emptyDir: {} }
+        - { name: users, emptyDir: {} }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: csi-cinder-high-speed-gen2
+        resources: { requests: { storage: 40Gi } }
