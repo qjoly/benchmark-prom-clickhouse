@@ -278,16 +278,17 @@ the ratios:
   ClickHouse client load: its loader derives the tag column list only while creating its own
   tables, so it cannot target pre-made Distributed tables. The RF=2 sharded+replicated write is
   therefore measured separately as a server-side `INSERT SELECT`, which pays no client protocol.
-- **Reads are single-shot and timed asymmetrically** (ClickHouse server-time versus Mimir full
-  HTTP+JSON). Order-of-magnitude only.
+- **Reads are p50/p95 over 10 runs, both engines over HTTP** (result serialization + transport on
+  both sides), so the read numbers are fair. Still single-node data on both, and one dataset shape.
 - **Shared node.** A single 12 vCPU Talos node running dozens of other namespaces, at roughly 80%
   CPU during the runs. cgroup throttling is possible and was not isolated.
 - **Everything on one physical node, which penalizes Mimir more than ClickHouse.** Mimir is built
   to scale horizontally: on a real cluster its three RF=3 ingesters would sit on separate machines,
   spreading the 3x write amplification across 3x the hardware. Stacked on one 12 vCPU box they
   contend for the same CPU, plus gossip/gRPC overhead that assumes a network. ClickHouse needs no
-  scale-out to perform (it used ~1 core). So the **throughput** ratios (the "19x" write) are the
-  numbers most likely to narrow on real multi-node hardware, where Mimir would scale up. The
+  scale-out to perform (it used ~1 core). So the **throughput** ratios are the numbers most likely
+  to narrow on real multi-node hardware, where Mimir would scale up (the bulk write gap is ~19x
+  single-node RF=1 vs Mimir RF=3, ~15x at equal RF=3, and ~2.5x under continuous small writes). The
   **efficiency** ratios (CPU-time per sample ~50x, storage) are architectural and largely
   node-count independent, so they are the more portable figures. Related, measured: a Distributed
   ClickHouse read on this single node was *slower* than the single-node table (overhead without
@@ -417,6 +418,10 @@ flowchart TB
 | `rustfs`         | S3 object storage for Mimir blocks      | 9100 (API) / 9101 (console) |
 | `grafana`        | Visualization (`obs` profile)           | 3000      |
 
+The diagram and this table show the Docker Compose wiring (with the nginx `mimir-gw`). The
+measured results were produced on Kubernetes (`k8s/`), where writes and reads reach Mimir through
+the `mimir` Service (Kubernetes load-balancing across the 3 pods), not nginx.
+
 ## Prerequisites
 
 - Docker + Docker Compose v2.
@@ -496,7 +501,7 @@ The target volume is tuned via `SCALE` (number of hosts = cardinality) and `DURA
 Other useful settings: `CH_WORKERS`/`PROM_WORKERS` (parallelism), `QUERY_TYPE`,
 `QUERY_COUNT`, image versions.
 
-## Two important subtleties (already handled)
+## Three important subtleties (already handled)
 
 1. **Mimir rejects samples that are too old.** Unlike VictoriaMetrics, Mimir
    (like Prometheus) refuses backfill outside its window. `scripts/01_generate.sh` **therefore
@@ -560,7 +565,11 @@ make clean    # stops and REMOVES volumes + generated data/results
 
 ## Known limitations
 
+For the limits that affect how you read the *numbers* (single-node data, durability model,
+one dataset shape), see [Caveats](#caveats). The points below are
+operational limits of the sandbox stack itself:
+
 - A single ClickHouse Keeper node (no coordinator HA), enough for a sandbox.
-- TSBS ClickHouse ingestion targets `chnode1` (single-node schema); sharding/replication is
+- TSBS ClickHouse ingestion targets one node (single-node schema); sharding/replication is
   demonstrated by the cluster lab, not during the raw ingestion measurement.
 - The TSBS flags can vary depending on `TSBS_REF`: they are centralized in `scripts/*.sh`.
