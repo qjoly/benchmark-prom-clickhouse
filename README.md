@@ -96,6 +96,7 @@ Measured paths for the same 1.08 billion points:
 | ClickHouse, cluster write (INSERT SELECT into Distributed) | +48 s | ~22 M points/s (server-side) | 2 shards, RF=2 |
 | Mimir, backfill (out-of-order) | 5,270 s | 205 k points/s | 3 nodes, RF=3 |
 | Mimir, real-time (append at head) | 5,292 s | 204 k points/s | 3 nodes, RF=3 |
+| Mimir, single instance (monolithic) | 3,645 s | 296 k points/s | 1 instance, RF=1 |
 
 Read the ClickHouse and Mimir rows with the asymmetry in mind (see Caveats): the ClickHouse
 client path is single node at RF=1, and its cluster write is a server-side INSERT SELECT with no
@@ -137,6 +138,12 @@ RF=2, while Mimir keeps one compacted copy in object storage with durability han
 Mimir spent roughly 50x more CPU-time than ClickHouse for the same data. The replication factor
 (3 vs 2) explains only about 1.5x of that. The rest is architectural: the per-sample remote-write
 path (protobuf, RF fan-out, TSDB head) against columnar batch inserts.
+
+To separate the cost of clustering from the engine itself, a single-instance monolithic Mimir
+(RF=1, no gossip) was also run: it ingested at 296 k/s using ~10,800 core-seconds, versus the
+3-node RF=3 cluster's 205 k/s and ~28,700 core-seconds. So dropping clustering and RF=3 makes
+Mimir about 1.4x faster and ~2.6x cheaper, but it is still ~22x the CPU-time of ClickHouse. Most
+of the gap is the engine and protocol, not the cluster. (See `k8s/40-mimir-mono.yaml`.)
 
 ### Read (mirrored queries, correct metric names, 100,000 hosts)
 
