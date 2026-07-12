@@ -5,3 +5,5 @@ terraform.tfvars
 .kubeconfigs/
 *.kubeconfig
 crash.log
+.objstore.env
+*.env
