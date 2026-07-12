@@ -167,9 +167,26 @@ ClickHouse then merges in the background. Loading the same 1.44M-row slice both 
 
 Small batches create ~50x more parts and ~10x more merge work, and the load is ~4x slower. So the
 headline bulk write numbers understate ClickHouse's steady-state cost under continuous small-write
-ingestion. It is still faster than Mimir here (about 900k vs 205k points/s even at batch=200), but
-the gap narrows and the background merge CPU is real. A real metrics deployment would tune
-`batch-size` and `async_insert`.
+ingestion.
+
+At full scale (`scripts/steady_state.sh`, the whole 108M rows at batch 200, sampled every 20 s for
+~35 minutes):
+
+| | Bulk (batch 10k) | Continuous (batch 200) |
+|---|---|---|
+| Throughput | 3.95 M points/s | 510 k points/s |
+| Parts created | ~hundreds | 540,050 |
+| Merges run | tens | 73,755 |
+| Merge CPU-time | seconds | ~2,527 core-seconds |
+
+Two things stand out. First, throughput drops ~7.7x (small parts, constant merging), so the write
+gap versus Mimir narrows from ~19x to ~2.5x under a scrape-like pattern (510k vs 205k points/s).
+Second, ClickHouse reaches a genuine steady state: active parts stayed bounded (median 30, max 48)
+across the whole run while merges ran continuously, so it kept pace rather than falling behind, at
+the cost of ~2,500 core-seconds of background merge work. batch=200 is a deliberate worst case; a
+real deployment would use `async_insert` or a buffer to batch writes and avoid the part explosion.
+It is still faster than Mimir, but this is the honest continuous-ingestion picture, not the bulk
+best case.
 
 ### Read (mirrored queries, correct metric names, 10,000 hosts / 100k series)
 
@@ -331,8 +348,9 @@ conclusions, but several would move the ratios.
       cannot do; needs a patched loader or a different generator.
 - [x] Measure a genuine real-time, in-order-at-head write (now-anchored dataset, since
       `--use-current-time` is a no-op): 203 k/s, matching the out-of-order backfill.
-- [ ] Steady-state continuous ingestion over hours/days: watch ClickHouse background merges and
-      Mimir compaction under sustained load, not just a one-shot bulk (see the merge tax).
+- [x] Steady-state continuous ingestion (~35 min at batch 200): ClickHouse reached a bounded
+      steady state (parts median 30 / max 48, ~2,500 core-s of background merge), throughput 510k
+      points/s vs 3.95M bulk. Still TODO: run over hours/days and sample Mimir compaction too.
 - [ ] Tune ClickHouse for a metrics pattern (`async_insert`, batch sizing) and re-measure.
 
 ### Read
