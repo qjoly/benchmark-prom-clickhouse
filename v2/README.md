@@ -172,6 +172,32 @@ Full-scale Mimir backfill (1.08 B points, 30h now-anchored window, out-of-order)
   softened**: at 1.08 B, freshly shipped, Mimir is the larger of the two. A clean post-dedup Mimir
   number needs many hours of compactor time, which was not run to completion here.
 
+## Reads on Mimir's axis (reviewer round 2)
+
+The read gradient elsewhere grows ClickHouse's analytical axis. Here are the metrics-store query
+shapes instead, run on cold block data and on fresh in-head data, each engine on its own copy,
+HTTP p50 in ms:
+
+| Query | Mimir (block) | ClickHouse (block) | Mimir (head) | ClickHouse (head) |
+|---|---|---|---|---|
+| latest value, all 10k hosts (instant) | 1364 | 396 | 264 | 19 |
+| selective, 1 host (instant) | 9 | 13 | 5 | 9 |
+| rate()-style, all hosts | 1060 | 175 | 161 | 25 |
+
+Findings, and they are a bit counterintuitive:
+- **Fresh head data helps Mimir a lot** (instant-all 1364 to 264 ms), confirming the reviewer's
+  data-age point, **but ClickHouse still wins every all-series query**, on head or block, because a
+  columnar scan of this (small) dataset beats Mimir iterating over 10k series.
+- **Mimir wins only the selective single-series lookup** (5 vs 9 ms on head), which is the
+  dashboard / point-query pattern and lines up with V1's high-concurrency win.
+- **rate():** one PromQL function versus a SQL `argMax/argMin/time` expression (a true per-scrape
+  rate needs window functions, more painful still). ClickHouse is faster but the query is far
+  harder to write. `cpu-only` is gauges, so the rate values are meaningless here; the point is the
+  query-path cost and the ergonomics.
+- **Net:** even on its own turf, Mimir's edge is selective queries, high concurrency, PromQL
+  ergonomics, and the Prometheus ecosystem, not raw single-query latency. That sharpens the
+  verdict rather than softening it.
+
 ## 4. Tear down
 
 ```bash
