@@ -198,6 +198,31 @@ Findings, and they are a bit counterintuitive:
   ergonomics, and the Prometheus ecosystem, not raw single-query latency. That sharpens the
   verdict rather than softening it.
 
+## Resilience (making the ops tests symmetric)
+
+V1 exercised ClickHouse ops (compaction, replica rebuild in 6 s). The Mimir side:
+
+- **Ingester loss.** Killed one of the three RF=3 ingesters. Reads kept working through the outage
+  (the query for a series returned correctly on every attempt, served by the two surviving
+  replicas): **zero read downtime**. The pod came back Ready in **56 s** (recreate + WAL replay +
+  ring rejoin). Different mechanism from ClickHouse's part refetch, but both tolerate a node loss
+  without losing reads.
+
+## Resource footprint at rest (full datasets loaded)
+
+`kubectl top`, holding ClickHouse's 108M rows and Mimir's 1.08 B in blocks:
+
+| Engine | CPU | Memory |
+|---|---|---|
+| ClickHouse (4 chnode) | 281m | **8.3 GiB** |
+| Mimir (3 ingesters) | 284m | **1.8 GiB** |
+
+Mimir's resting memory is **~4.7x lower**: its data is offloaded to object storage (blocks) and
+paged in via the store-gateway on demand, while ClickHouse keeps data on local disk with in-memory
+marks/caches. CPU is comparable at rest. Under active query load the gap narrows (ClickHouse's
+caches earn their memory on reads, and the store-gateway pulls blocks into memory), but the
+architectural point stands: at scale Mimir trades RAM for object-storage latency.
+
 ## 4. Tear down
 
 ```bash
