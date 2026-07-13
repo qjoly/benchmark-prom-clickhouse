@@ -162,11 +162,14 @@ table sat at ~2.7 to 2.9 GiB across 12 background-merged parts, so compaction di
 if anything it grew slightly (larger blocks compress marginally worse for this data). The earlier
 "2.88 GiB" was not an under-count from unmerged parts.
 
-The real ClickHouse win here is **compression** (~4.2x): one copy is ~2x smaller than Mimir's
-blocks. Total footprint is a different story and depends on the durability model. ClickHouse
-stores RF=2 on cluster disks (~6.08 GiB), while Mimir keeps a single compacted copy in object
-storage and leans on S3 for durability. Counting replication, the two are essentially equal
-(~6 GiB each), so don't read the 3-vs-6 gap as a 2x storage saving.
+ClickHouse compresses well (~4.2x), but read the "smaller than Mimir" comparison carefully: the
+6.0 GiB Mimir figure is a single-node snapshot whose compaction state is hard to pin down. On the
+multi-node run ([`v2/`](v2/README.md)), the freshly-shipped Mimir bucket for the same 1.08 B sat
+around **11 GiB** and only dedups its RF=3 block copies down over hours of compaction, i.e. it was
+*larger* than ClickHouse's 6.51 GiB at RF=2 until compaction caught up. So the honest statement is:
+ClickHouse's per-copy compression is real, but the total on-disk footprint depends on replication
+and on Mimir's compaction horizon, and is not a clean "2x smaller" win for either side. Do not
+quote the 3-vs-6 gap as a storage saving.
 
 ### Resource consumption during the write (from SigNoz)
 

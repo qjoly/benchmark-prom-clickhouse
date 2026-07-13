@@ -161,12 +161,16 @@ Full-scale Mimir backfill (1.08 B points, 30h now-anchored window, out-of-order)
   (`setsid`) so it survives `kubectl exec` disconnects; note `tsbs_load_prometheus` fails fast if
   the generated window is older than Mimir's 40h out-of-order limit, so the range must be anchored
   to "now".
-- **Mimir storage and the RF=3-dedup question (reviewer was right).** After the head flushed, the
-  `mimir-blocks` bucket was 8.9 GiB with the compactor actively deduplicating: 79 compactor runs,
-  12 blocks marked for deletion. So the raw bucket number **includes pre-dedup RF=3 block copies**
-  that the compactor is still merging away; the fully-deduped footprint is lower and only settles
-  after the compactor's deletion delay. The V1 "6.0 GiB / ~2x smaller per copy" storage claim
-  should be read with that caveat until a post-dedup number is captured.
+- **Mimir storage and the RF=3-dedup question (reviewer was right).** Once the ingester heads
+  flushed, the `mimir-blocks` bucket settled around **11 GiB across 104 blocks** for the full
+  1.08 B, and stayed there: Mimir's split-and-merge compaction converges over hours, not minutes
+  (7 group compactions, block count flat at 104, nothing marked for deletion in the window we
+  watched). Two things follow. First, **that 11 GiB is larger than ClickHouse's 6.51 GiB at RF=2**,
+  and much larger than the V1 "6.0 GiB" figure, so the shipped Mimir footprint still carries
+  RF=3 block copies that only dedup down over a long compaction horizon. Second, the V1 storage
+  claim that ClickHouse is "~2x smaller per copy" is **compaction-state-dependent and should be
+  softened**: at 1.08 B, freshly shipped, Mimir is the larger of the two. A clean post-dedup Mimir
+  number needs many hours of compactor time, which was not run to completion here.
 
 ## 4. Tear down
 
