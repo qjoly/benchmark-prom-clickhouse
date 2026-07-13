@@ -152,12 +152,21 @@ Five follow-up measurements on the multi-node cluster:
 - **ClickHouse storage on Cinder (108M):** 3.04 GiB one copy (4.17x), **6.51 GiB at cluster RF=2**,
   matching V1's numbers on real block volumes.
 
-Still pending, they need the long backfill:
-- Full-scale **Mimir** write throughput at 1.08 B (a ~40 min out-of-order backfill).
-- **Mimir object-storage footprint** and the reviewer's RF=3-dedup question: the `mimir-blocks`
-  bucket is currently near-empty because recent data still sits in the ingester head (local PVC),
-  not yet shipped as blocks. It can only be measured after blocks ship (block-range close, ~2h)
-  and the compactor runs.
+Full-scale Mimir backfill (1.08 B points, 30h now-anchored window, out-of-order):
+
+- **Multi-node Mimir write holds at scale: 430,420 samples/s** for the full 1.08 B (2,509 s / ~42
+  min), ~18,010 core-seconds, no OOM. That matches the 15M slice (427k) and the sweep (424k), so
+  the ~2x over V1's 205k/s is confirmed on the full run, and the per-sample CPU is lower (~16.7
+  vs V1's ~24-27 µcore-s/sample: less contention on separate nodes). Run detached inside the pod
+  (`setsid`) so it survives `kubectl exec` disconnects; note `tsbs_load_prometheus` fails fast if
+  the generated window is older than Mimir's 40h out-of-order limit, so the range must be anchored
+  to "now".
+- **Mimir storage and the RF=3-dedup question (reviewer was right).** After the head flushed, the
+  `mimir-blocks` bucket was 8.9 GiB with the compactor actively deduplicating: 79 compactor runs,
+  12 blocks marked for deletion. So the raw bucket number **includes pre-dedup RF=3 block copies**
+  that the compactor is still merging away; the fully-deduped footprint is lower and only settles
+  after the compactor's deletion delay. The V1 "6.0 GiB / ~2x smaller per copy" storage claim
+  should be read with that caveat until a post-dedup number is captured.
 
 ## 4. Tear down
 
