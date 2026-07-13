@@ -223,6 +223,31 @@ marks/caches. CPU is comparable at rest. Under active query load the gap narrows
 caches earn their memory on reads, and the store-gateway pulls blocks into memory), but the
 architectural point stands: at scale Mimir trades RAM for object-storage latency.
 
+## High cardinality (1M active series)
+
+Ingested SCALE=100000 (1M series, 10 metrics x 100k hosts) into both engines:
+
+- Both ingested without rejection (Mimir 416k samples/s, ClickHouse 4.66 M points/s).
+- **Mimir memory jumped to ~4.2 GiB per ingester** (1.1M series in head; RF=3 means each ingester
+  holds every series), roughly 3-4 KB/series. This is the classic Prometheus/Mimir cardinality
+  cost: RAM scales with active series (~12 GiB across the 3 ingesters for 1M series). ClickHouse's
+  memory did not balloon (cardinality is just more rows/tags).
+- Query latency at 1M series (p50/p95 ms):
+
+  | Query | Mimir | ClickHouse |
+  |---|---|---|
+  | selective, 1 host of 100k | **5.3 / 5.7** | 9.9 / 10.3 |
+  | broad, count all series | 1587 / 1664 | **17 / 21** |
+
+- **Mimir's selective-query latency stays flat with cardinality** (5 ms at 1M series, same as at
+  10k): its inverted index makes point lookups independent of total cardinality. That is its
+  genuine home-turf win. ClickHouse crushes the broad count (columnar, ~94x).
+- **Churn** (series appearing and disappearing over time) was not simulated: TSBS has no native
+  churn generator. It remains an open gap and is the other half of Mimir's home turf.
+
+Net: high cardinality is where Mimir's selective reads shine (index-flat latency) but its memory
+cost bites; ClickHouse takes the cardinality in stride on memory and stays fast on wide queries.
+
 ## 4. Tear down
 
 ```bash
