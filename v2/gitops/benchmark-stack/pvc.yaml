@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rustfs-data
+  namespace: bench-prom-ch
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: csi-cinder-high-speed-gen2
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tsbs-workspace
+  namespace: bench-prom-ch
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: csi-cinder-high-speed-gen2
+  resources:
+    requests:
+      storage: 80Gi
