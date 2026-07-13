@@ -10,8 +10,9 @@ Local sandbox to compare, under equivalent load, a Prometheus-compatible TSDB
 The benchmark engine is [TSBS](https://github.com/timescale/tsbs) (use-case `cpu-only`),
 which generates **a single dataset** injected into both systems for a fair comparison.
 
-A **multi-node** variant lives in **[`v2/`](v2/README.md)**: the same benchmark on OVH Managed
-Kubernetes with ClickHouse and Mimir on separate machines, provisioned with OpenTofu.
+> [!IMPORTANT]  
+> A **multi-node** variant lives in **[`v2/`](v2/README.md)**: the same benchmark on OVH Managed
+> Kubernetes with ClickHouse and Mimir on separate machines, provisioned with OpenTofu.
 
 ## Contents
 
