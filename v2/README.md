@@ -2,8 +2,9 @@
 
 V1 ran everything on one shared 12 vCPU node. Its caveats predicted the throughput ratios would
 narrow on real multi-node hardware, because Mimir spreads its RF=3 ingesters across machines while
-V1 stacked them on one box. V2 confirms that prediction on a real multi-node cluster: OVH Managed
-Kubernetes, ClickHouse and Mimir on separate machines, over a real network.
+V1 stacked them on one box. V2 confirms that write prediction on a real multi-node cluster (OVH
+Managed Kubernetes, ClickHouse and Mimir on separate machines, over a real network) and, just as
+usefully, shows where multi-node does *not* change the picture. See the Results summary.
 
 No GitOps and no autoscaling: infrastructure is OpenTofu, workloads are applied by hand with
 `kubectl`. This is the procedure as it actually ran, gotchas included.
@@ -106,10 +107,31 @@ Or drive it by hand, as this run did (generate a now-anchored dataset in the `ts
 Mimir over remote-write and into ClickHouse with `tsbs_load_clickhouse`, measure per-pod CPU via
 each pod's `process_cpu_seconds_total`).
 
-## Results (15M-point now-anchored slice, SCALE=10000 / 100k series)
+## 4. Tear down
 
-Not the full 1.08 B run: a 15M-point slice on the 4 vCPU nodes, enough to show the multi-node
-effect. Compare to the same slice on V1's single node.
+```bash
+cd v2/infra
+tofu destroy
+```
+
+The stack's PVCs use `Delete` reclaim, so deleting the `bench-prom-ch` namespace before
+`tofu destroy` lets the Cinder CSI remove the block volumes; otherwise they can be orphaned. Then
+confirm none are left behind in the OVH console or with `openstack volume list`.
+
+## Results
+
+Headline: on real multi-node hardware the **write** gap narrows sharply (Mimir's RF=3 write roughly
+doubles to ~430k samples/s with one ingester per node) and ClickHouse **distributed reads** flip
+from losing (V1, one node) to winning at scale. The **qualitative verdict still holds**: ClickHouse
+wins bulk ingest, analytical/wide reads, and raw read latency even on Mimir's own query shapes;
+Mimir wins selective/point queries, high-concurrency reads, resilience with zero read downtime, and
+resting memory (data offloaded to object storage), and it keeps selective latency flat as
+cardinality grows. Details below, from a first 15M slice through the full 1.08 B run.
+
+### First pass (15M-point now-anchored slice, SCALE=10000 / 100k series)
+
+A 15M-point slice on the 4 vCPU nodes, enough to show the multi-node effect before the full run.
+Compare to the same slice on V1's single node.
 
 | Metric | V1 (single node) | V2 (multi-node) | Effect |
 |---|---|---|---|
@@ -131,7 +153,7 @@ Takeaways:
   still wins wide aggregations (by even more here). Multi-node moved the write and quorum numbers,
   not the direction of the read results.
 
-## Deep-dive at scale (108M rows / 1.08 B points loaded into ClickHouse)
+### Deep-dive at scale (108M rows / 1.08 B points loaded into ClickHouse)
 
 Five follow-up measurements on the multi-node cluster:
 
@@ -172,7 +194,7 @@ Full-scale Mimir backfill (1.08 B points, 30h now-anchored window, out-of-order)
   softened**: at 1.08 B, freshly shipped, Mimir is the larger of the two. A clean post-dedup Mimir
   number needs many hours of compactor time, which was not run to completion here.
 
-## Reads on Mimir's axis (reviewer round 2)
+### Reads on Mimir's axis (reviewer round 2)
 
 The read gradient elsewhere grows ClickHouse's analytical axis. Here are the metrics-store query
 shapes instead, run on cold block data and on fresh in-head data, each engine on its own copy,
@@ -198,7 +220,7 @@ Findings, and they are a bit counterintuitive:
   ergonomics, and the Prometheus ecosystem, not raw single-query latency. That sharpens the
   verdict rather than softening it.
 
-## Resilience (making the ops tests symmetric)
+### Resilience (making the ops tests symmetric)
 
 V1 exercised ClickHouse ops (compaction, replica rebuild in 6 s). The Mimir side:
 
@@ -208,7 +230,7 @@ V1 exercised ClickHouse ops (compaction, replica rebuild in 6 s). The Mimir side
   ring rejoin). Different mechanism from ClickHouse's part refetch, but both tolerate a node loss
   without losing reads.
 
-## Resource footprint at rest (full datasets loaded)
+### Resource footprint at rest (full datasets loaded)
 
 `kubectl top`, holding ClickHouse's 108M rows and Mimir's 1.08 B in blocks:
 
@@ -223,7 +245,7 @@ marks/caches. CPU is comparable at rest. Under active query load the gap narrows
 caches earn their memory on reads, and the store-gateway pulls blocks into memory), but the
 architectural point stands: at scale Mimir trades RAM for object-storage latency.
 
-## High cardinality (1M active series)
+### High cardinality (1M active series)
 
 Ingested SCALE=100000 (1M series, 10 metrics x 100k hosts) into both engines:
 
@@ -247,13 +269,3 @@ Ingested SCALE=100000 (1M series, 10 metrics x 100k hosts) into both engines:
 
 Net: high cardinality is where Mimir's selective reads shine (index-flat latency) but its memory
 cost bites; ClickHouse takes the cardinality in stride on memory and stays fast on wide queries.
-
-## 4. Tear down
-
-```bash
-cd v2/infra
-tofu destroy
-```
-
-Then confirm no Cinder volumes are left behind (PVCs use `Delete` reclaim, but verify in the OVH
-console or `openstack volume list`).
