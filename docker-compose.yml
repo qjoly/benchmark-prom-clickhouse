@@ -152,7 +152,7 @@ services:
     networks: [bench]
 
   grafana:
-    image: grafana/grafana:11.1.0
+    image: grafana/grafana:13.1.0
     container_name: grafana
     profiles: ["obs"]
     environment:
