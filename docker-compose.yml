@@ -142,7 +142,7 @@ services:
       - mimir3-data:/data
 
   mimir-gw:
-    image: nginx:1.27-alpine
+    image: nginx:1.31-alpine
     container_name: mimir-gw
     volumes:
       - ./mimir/nginx.conf:/etc/nginx/nginx.conf:ro
